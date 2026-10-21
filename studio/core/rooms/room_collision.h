@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -68,6 +69,10 @@ struct CollisionRules {
     std::map<std::string, std::array<std::int32_t, 4>> markers;
 };
 
+// The markers of `c` named in `moved` put where it says (x, y, z in 20.12, the facing word); the others,
+// and everything else of the collision, as they were. How many were moved.
+std::size_t move_markers(RoomCollision* c, const std::map<std::string, std::array<std::int32_t, 4>>& moved);
+
 // What a made room should tell the modder (the window says it in their
 // language, the command line in English: warning_text).
 struct RoomWarning {
@@ -119,7 +124,27 @@ bool ground_under(const RoomCollision& c, double x, double z, double top, double
 
 // Empty when `built` is what the game can read in place of `original` (read back the same, faces
 // convex with 3-4 corners and buildable planes, slots naming records, the tree as the walk wants, every
-// name kept); else the first problem.
-std::string check_collision(const RoomCollision& built, const RoomCollision& original);
+// name kept); else the first problem. With `trust_original_faces`, a face of the same kind and corners as
+// one of `original`'s is taken as the game has it (some of the game's own are not convex, and it reads them).
+std::string check_collision(const RoomCollision& built, const RoomCollision& original,
+                            bool trust_original_faces = false);
+
+// The tree built again over `c`'s faces, on a power-of-two square holding them all (its smallest node
+// `original`'s, or larger to stay within the walk's levels). `order`: per list, each face's index before.
+bool place_tree(RoomCollision* c, const RoomCollision& original, std::array<std::vector<std::size_t>, 3>* order,
+                std::string* why);
+
+// The nearest face a ray meets from its front (the side stood on or pushed from, as the views draw it), in
+// the game's units: from `from` along `dir` (any length). `skip` (may be empty) leaves faces out by list and
+// index. False when it meets none.
+struct RayHit {
+    int list = -1;
+    std::size_t face = 0;
+    std::array<double, 3> at{};      // where, in units
+    std::array<double, 3> normal{};  // the face's, unit length
+    double distance = 0;             // along `dir` made unit length
+};
+bool cast_ray(const RoomCollision& c, const std::array<double, 3>& from, const std::array<double, 3>& dir,
+              const std::function<bool(int, std::size_t)>& skip, RayHit* hit);
 
 }  // namespace studio

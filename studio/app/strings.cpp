@@ -960,6 +960,35 @@ constexpr Row rows[] =
           "Boden und Wände des Spiels bleiben, wie sie waren: Nur das Aussehen des Raums ändert sich.",
           "Pavimento e muri del gioco restano com'erano: cambia solo l'aspetto della stanza.",
           "El suelo y las paredes del juego se quedan como estaban: solo cambia el aspecto de la sala."}},
+        {S::map_markers_only,
+         {"Markers and exits only", "Repères et sorties seulement", "Nur Marker und Ausgänge",
+          "Solo segnaposti e uscite", "Solo marcadores y salidas"}},
+        {S::map_markers_only_hint,
+         {"Keep the game's room as it looks and plays, and move only where characters appear (the markers) "
+          "and the exits' models. No model of your own is needed.",
+          "Garder la salle du jeu telle qu'elle est et joue, et déplacer seulement l'endroit où les personnages "
+          "apparaissent (les repères) et les modèles des sorties. Aucun modèle à vous n'est nécessaire.",
+          "Den Raum des Spiels lassen, wie er aussieht und sich spielt, und nur verschieben, wo Figuren "
+          "erscheinen (die Marker), und die Modelle der Ausgänge. Kein eigenes Modell nötig.",
+          "Tenere la stanza del gioco com'è e come si gioca, e spostare solo dove compaiono i personaggi (i "
+          "segnaposti) e i modelli delle uscite. Non serve un modello tuo.",
+          "Mantener la sala del juego tal como se ve y se juega, y mover solo dónde aparecen los personajes "
+          "(los marcadores) y los modelos de las salidas. No hace falta un modelo propio."}},
+        {S::map_markers_only_note,
+         {"The game's room stays as it looks and plays. Click a marker in the picture (or pick one under "
+          "Markers) to move or turn it; the exits' models move below. Save to write them into the mod.",
+          "La salle du jeu reste telle qu'elle est et joue. Cliquez un repère dans l'image (ou choisissez-le "
+          "sous Repères) pour le déplacer ou le tourner ; les modèles des sorties se déplacent ci-dessous. "
+          "Enregistrez pour les écrire dans le mod.",
+          "Der Raum des Spiels bleibt, wie er aussieht und sich spielt. Klicke einen Marker im Bild an "
+          "(oder wähle ihn unter Marker), um ihn zu verschieben oder zu drehen; die Modelle der Ausgänge "
+          "werden unten verschoben. Speichern schreibt sie in den Mod.",
+          "La stanza del gioco resta com'è e come si gioca. Fai clic su un segnaposto nell'immagine (o "
+          "sceglilo in Segnaposti) per spostarlo o ruotarlo; i modelli delle uscite si spostano qui sotto. "
+          "Salva per scriverli nella mod.",
+          "La sala del juego se queda tal como se ve y se juega. Haz clic en un marcador de la imagen (o "
+          "elígelo en Marcadores) para moverlo o girarlo; los modelos de las salidas se mueven abajo. Guarda "
+          "para escribirlos en el mod."}},
         {S::map_advanced,
          {"Advanced: steepest floor, the room's other models, names, exits",
           "Avancé : sol le plus raide, autres modèles de la salle, noms, sorties",
@@ -1225,6 +1254,126 @@ constexpr Row rows[] =
          {"Exit {0}, model {1} (entry {2})", "Sortie {0}, modèle {1} (entrée {2})",
           "Ausgang {0}, Modell {1} (Eintrag {2})", "Uscita {0}, modello {1} (voce {2})",
           "Salida {0}, modelo {1} (entrada {2})"}},
+        {S::map_gate_at, {"At {0}, {1}, {2}", nullptr, nullptr, nullptr, "En {0}, {1}, {2}"}},
+        {S::map_gate_move_hint,
+         {"To move it, choose \"Markers and exits only\" (or a model) under \"Replace this room\".", nullptr, nullptr,
+          nullptr, "Para moverlo, elige \"Solo marcadores y salidas\" (o un modelo) en \"Sustituir esta sala\"."}},
+        {S::map_gate_reset, {"Back to the game's place", nullptr, nullptr, nullptr, "Volver al lugar del juego"}},
+        {S::map_edit_help,
+         {"Click a face to select it; Ctrl+click adds it or takes it away; Shift+drag selects the faces facing you "
+          "inside a box; click a shape's face to pick the shape. Delete removes the selected faces; Ctrl+Z undoes, "
+          "Ctrl+Y redoes.",
+          nullptr, nullptr, nullptr,
+          "Haz clic en una cara para elegirla; Ctrl+clic la añade o la quita; Mayús+arrastrar elige las caras que te "
+          "miran dentro de un recuadro; clic en una cara de una forma elige la forma. Supr quita las caras elegidas; "
+          "Ctrl+Z deshace, Ctrl+Y rehace."}},
+        {S::map_edit_undo, {"Undo", nullptr, nullptr, nullptr, "Deshacer"}},
+        {S::map_edit_redo, {"Redo", nullptr, nullptr, nullptr, "Rehacer"}},
+        {S::map_edit_error,
+         {"The hand edits cannot be saved: {0}", nullptr, nullptr, nullptr,
+          "Las ediciones a mano no se pueden guardar: {0}"}},
+        {S::map_edit_selected, {"{0} faces selected", nullptr, nullptr, nullptr, "{0} caras elegidas"}},
+        {S::map_edit_delete, {"Remove", nullptr, nullptr, nullptr, "Quitar"}},
+        {S::map_edit_make_ground, {"Make grounds", nullptr, nullptr, nullptr, "Hacer suelos"}},
+        {S::map_edit_make_wall, {"Make walls", nullptr, nullptr, nullptr, "Hacer paredes"}},
+        {S::map_edit_make_ceiling, {"Make ceilings", nullptr, nullptr, nullptr, "Hacer techos"}},
+        {S::map_edit_select_none, {"Select none", nullptr, nullptr, nullptr, "No elegir ninguna"}},
+        {S::map_edit_names, {"Names", nullptr, nullptr, nullptr, "Nombres"}},
+        {S::map_edit_apply_names, {"Give these names", nullptr, nullptr, nullptr, "Dar estos nombres"}},
+        {S::map_edit_counts,
+         {"Hand edits: {0} faces removed, {1} of another kind, {2} renamed", nullptr, nullptr, nullptr,
+          "Ediciones a mano: {0} caras quitadas, {1} de otro tipo, {2} renombradas"}},
+        {S::map_edit_bring_back, {"Bring every face back", nullptr, nullptr, nullptr, "Devolver todas las caras"}},
+        {S::map_edit_unmatched,
+         {"{0} hand edits name faces this room no longer has (its model or settings changed): they do nothing.",
+          nullptr, nullptr, nullptr,
+          "{0} ediciones a mano nombran caras que esta sala ya no tiene (cambió su modelo o sus ajustes): no hacen "
+          "nada."}},
+        {S::map_edit_shapes, {"Shapes ({0})", nullptr, nullptr, nullptr, "Formas ({0})"}},
+        {S::map_edit_add, {"Add:", nullptr, nullptr, nullptr, "Añadir:"}},
+        {S::map_edit_add_hint,
+         {"Added over the selected faces, fitted to them (a ramp or wedge rising the way they rise), or at the "
+          "middle of the view. Its faces become grounds, walls and ceilings by their slope, as a model's do.",
+          nullptr, nullptr, nullptr,
+          "Se añade sobre las caras elegidas, ajustada a ellas (una rampa o cuña sube hacia donde suben), o en el "
+          "centro de la vista. Sus caras pasan a ser suelos, paredes y techos según su pendiente, como las de un "
+          "modelo."}},
+        {S::map_shape_plane, {"Plane", nullptr, nullptr, nullptr, "Plano"}},
+        {S::map_shape_ramp, {"Ramp", nullptr, nullptr, nullptr, "Rampa"}},
+        {S::map_shape_box, {"Box", nullptr, nullptr, nullptr, "Caja"}},
+        {S::map_shape_wedge, {"Wedge", nullptr, nullptr, nullptr, "Cuña"}},
+        {S::map_shape_kind, {"Shape", nullptr, nullptr, nullptr, "Forma"}},
+        {S::map_shape_at, {"Place (bottom middle)", nullptr, nullptr, nullptr, "Lugar (centro de la base)"}},
+        {S::map_shape_turn, {"Turn (degrees x, y, z)", nullptr, nullptr, nullptr, "Giro (grados x, y, z)"}},
+        {S::map_shape_size, {"Size (x, y, z)", nullptr, nullptr, nullptr, "Tamaño (x, y, z)"}},
+        {S::map_shape_both, {"Both sides", nullptr, nullptr, nullptr, "Ambos lados"}},
+        {S::map_shape_turn90, {"Turn 90°", nullptr, nullptr, nullptr, "Girar 90°"}},
+        {S::map_shape_copy, {"Duplicate", nullptr, nullptr, nullptr, "Duplicar"}},
+        {S::map_shape_delete, {"Delete the shape", nullptr, nullptr, nullptr, "Borrar la forma"}},
+        {S::map_shape_row, {"{0}. {1} at {2}, {3}, {4}", nullptr, nullptr, nullptr, "{0}. {1} en {2}, {3}, {4}"}},
+        {S::map_shape_by_slope, {"By its slope", nullptr, nullptr, nullptr, "Según su pendiente"}},
+        {S::map_shape_list, {"Collision kind", nullptr, nullptr, nullptr, "Tipo de colisión"}},
+        {S::map_gizmo_move, {"Move (1)", nullptr, nullptr, nullptr, "Mover (1)"}},
+        {S::map_gizmo_size, {"Resize (2)", nullptr, nullptr, nullptr, "Tamaño (2)"}},
+        {S::map_gizmo_turn, {"Turn (3)", nullptr, nullptr, nullptr, "Girar (3)"}},
+        {S::map_gizmo_keys,
+         {"1 move  2 resize  3 turn  Ctrl: snap  right click: cancel", nullptr, nullptr, nullptr,
+          "1 mover  2 tamaño  3 girar  Ctrl: ajustar  clic derecho: cancelar"}},
+        {S::map_gizmo_hint,
+         {"The picked shape's handles in the picture. Move: drag an arrow to move along that axis (red x, green "
+          "up, blue z), the white square to slide it over the ground. Resize: drag a side's box, the other side "
+          "stays. Turn: drag the green ring. Hold Ctrl to snap (0.25 units, 15 degrees); a right click while "
+          "dragging puts it back. Delete removes the shape when no face is selected.",
+          nullptr, nullptr, nullptr,
+          "Los controles de la forma elegida en la imagen. Mover: arrastra una flecha para moverla en ese eje "
+          "(rojo x, verde arriba, azul z), el cuadrado blanco para deslizarla sobre el suelo. Tamaño: arrastra la "
+          "caja de un lado, el otro lado se queda. Girar: arrastra el anillo verde. Mantén Ctrl para ajustar (0,25 "
+          "unidades, 15 grados); un clic derecho al arrastrar la devuelve. Supr borra la forma si no hay caras "
+          "elegidas."}},
+        {S::map_tb_edit, {"Edit collision", nullptr, nullptr, nullptr, "Editar colisión"}},
+        {S::map_tb_mode, {"Handles:", nullptr, nullptr, nullptr, "Controles:"}},
+        {S::map_tb_place, {"Place", nullptr, nullptr, nullptr, "Lugar"}},
+        {S::map_tb_turn, {"Turn", nullptr, nullptr, nullptr, "Giro"}},
+        {S::map_tb_size, {"Size", nullptr, nullptr, nullptr, "Tamaño"}},
+        {S::map_tb_nothing,
+         {"Click a face or a shape in the picture to work on it; Ctrl+click adds faces, Shift+drag selects them "
+          "in a box.",
+          nullptr, nullptr, nullptr,
+          "Haz clic en una cara o una forma de la imagen para trabajar con ella; Ctrl+clic añade caras, "
+          "Mayús+arrastrar las elige en un recuadro."}},
+        {S::map_snap_surface, {"Snap to surfaces", nullptr, nullptr, nullptr, "Ajustar a superficies"}},
+        {S::map_snap_surface_hint,
+         {"While the Move square is dragged, the shape's bottom middle goes where the pointer meets a surface "
+          "(a floor, a wall's top, another shape); Ctrl still snaps it to 0.25 units across.",
+          nullptr, nullptr, nullptr,
+          "Al arrastrar el cuadrado de Mover, el centro de la base de la forma va donde el puntero toca una "
+          "superficie (un suelo, lo alto de una pared, otra forma); Ctrl la sigue ajustando a 0,25 unidades."}},
+        {S::map_drop, {"Drop to ground", nullptr, nullptr, nullptr, "Bajar al suelo"}},
+        {S::map_drop_hint,
+         {"Lowers (or raises) the picked shape until its bottom rests on the floor under it (End).", nullptr, nullptr,
+          nullptr, "Baja (o sube) la forma elegida hasta que su base se apoye en el suelo de debajo (Fin)."}},
+        {S::map_drop_none,
+         {"No floor under the shape to drop it on.", nullptr, nullptr, nullptr,
+          "No hay suelo bajo la forma donde bajarla."}},
+        {S::map_convert, {"Convert to:", nullptr, nullptr, nullptr, "Convertir en:"}},
+        {S::map_convert_hint,
+         {"The selected faces become one shape you can move, resize and turn: fitted over them (a plane lies on "
+          "them, facing their way; a ramp or wedge rises the way they rise), their kind and names kept when all "
+          "share them, and the faces themselves removed. One Undo brings them back.",
+          nullptr, nullptr, nullptr,
+          "Las caras elegidas pasan a ser una forma que puedes mover, redimensionar y girar: ajustada sobre ellas "
+          "(un plano se apoya en ellas, mirando hacia donde miran; una rampa o cuña sube hacia donde suben), con "
+          "su tipo y nombres si todas los comparten, y las caras quitadas. Un Deshacer las devuelve."}},
+        {S::map_camera, {"Camera:", nullptr, nullptr, nullptr, "Cámara:"}},
+        {S::map_camera_orbit, {"Orbit", nullptr, nullptr, nullptr, "Órbita"}},
+        {S::map_camera_fps, {"First person", nullptr, nullptr, nullptr, "Primera persona"}},
+        {S::map_camera_hint,
+         {"Left drag in the picture. Orbit: the camera circles the point in front of it. First person: it stays "
+          "where it is and looks around. Right or middle drag, W A S D, Q E and the wheel move it the same in both.",
+          nullptr, nullptr, nullptr,
+          "Arrastrar con el izquierdo en la imagen. Órbita: la cámara gira alrededor del punto que tiene delante. "
+          "Primera persona: se queda donde está y mira alrededor. Arrastrar con el derecho o el central, W A S D, "
+          "Q E y la rueda la mueven igual en los dos."}},
         {S::kind_mission, {"Missions", "Missions", "Missionen", "Missioni", "Misiones"}},
         {S::mission_header,
          {"{0}: {1} entries, {2} scripts, {3} steps", "{0} : {1} entrées, {2} scripts, {3} étapes",

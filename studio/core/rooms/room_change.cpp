@@ -260,7 +260,8 @@ std::string change_text(const RoomReplacement& r) {
     o << kHeading << "\n";
     o << "world " << r.world << "\n";
     o << "room " << r.room << "\n";
-    o << "model " << r.model << "\n";
+    if (!r.model.empty())
+        o << "model " << r.model << "\n";
     if (!r.kh2.empty())
         o << "kh2 " << r.kh2 << "\n";
     if (!r.collision.empty())
@@ -286,6 +287,7 @@ std::string change_text(const RoomReplacement& r) {
     for (const auto& [key, at] : r.gate_points) {
         o << "gate-point " << key.first << " " << key.second << " " << at[0] << " " << at[1] << " " << at[2] << "\n";
     }
+    o << edits_text(r.edits);
     return o.str();
 }
 
@@ -366,15 +368,24 @@ bool read_change(const std::filesystem::path& file, RoomReplacement* out, std::s
                 return fail_with(why, at + ": a gate model's point is 0 to 4");
             r.gate_points[{key, part}] = place;
         } else {
-            return fail_with(why, at + ": \"" + word + "\" is not known");
+            std::string problem;
+            const int edit = read_edit_line(word, rest, &r.edits, &problem);
+            if (edit < 0)
+                return fail_with(why, at + ": " + problem);
+            if (edit == 0)
+                return fail_with(why, at + ": \"" + word + "\" is not known");
+            continue;  // read whole, numbers and words
         }
         if (v.fail() && word != "world" && word != "model" && word != "collision" && word != "collision-kept" &&
             word != "material-names" && word != "drop-original") {
             return fail_with(why, at + ": not a number where one goes");
         }
     }
-    if (r.world.empty() || r.room < 0 || r.model.empty())
-        return fail_with(why, u8(file) + ": no world, room or model");
+    if (r.world.empty() || r.room < 0)
+        return fail_with(why, u8(file) + ": no world or room");
+    // no model: the game's room kept, only its markers and exits' models moved -- its floor and walls too
+    if (r.model.empty() && (!r.keep_collision || !r.collision.empty() || !r.kh2.empty()))
+        return fail_with(why, u8(file) + ": no model, yet the room's floor and walls are not the game's");
     if (!(r.place.scale > 0))
         return fail_with(why, u8(file) + ": the scale must be above 0");
     *out = std::move(r);
@@ -1116,6 +1127,10 @@ std::vector<std::pair<int, ObjectUse>> object_uses(const WorldRoom& room, const 
     std::vector<std::pair<int, ObjectUse>> out;
     bool first = true;
     for (const auto& o : room.objects) {
+        if (markers_only(r)) {
+            out.push_back({o.member, ObjectUse::keep});  // nothing of the modder's to draw
+            continue;
+        }
         const auto set = r.objects.find(o.member);
         out.push_back({o.member, set != r.objects.end() ? set->second : first ? ObjectUse::model : ObjectUse::hide});
         first = false;
@@ -1181,13 +1196,58 @@ bool build_room(const World& w, const std::filesystem::path& mod_dir, const Room
                          why)) {
         return false;
     }
-    const std::string problem = check_collision(b.collision, original);
+    if (!r.edits.empty() && !apply_collision_edits(&b.collision, original, r.edits, r.ground_limit, nullptr, why)) {
+        return false;
+    }
+    const std::string problem = check_collision(b.collision, original, true);
     if (!problem.empty())
         return fail_with(why, "the collision made is not one the game reads: " + problem);
     b.warnings = b.report.warnings;
     for (auto& more : sharing_warnings(w, r))
         b.warnings.push_back(std::move(more));
     *out = std::move(b);
+    return true;
+}
+
+std::string only_markers_differ(const RoomCollision& c, const std::vector<std::uint8_t>& game) {
+    const auto bytes = write_collision(c);
+    RoomCollision back, original;
+    std::string why;
+    if (!parse_collision(bytes, &back, &why))
+        return "it does not read back: " + why;
+    if (write_collision(back) != bytes)
+        return "it does not write back the same";
+    if (!parse_collision(game, &original, &why))
+        return "the game's does not read: " + why;
+    set_markers(&back, markers(original));
+    if (write_collision(back) != game)
+        return "more than its markers changed";
+    return {};
+}
+
+bool kept_collision(const World& w, const RoomReplacement& r, RoomCollision* out, std::size_t* moved,
+                    std::string* why) {
+    if (r.room < 0 || static_cast<std::size_t>(r.room) >= w.rooms.size())
+        return fail_with(why, "no room " + std::to_string(r.room));
+    const WorldRoom& room = w.rooms[static_cast<std::size_t>(r.room)];
+    const auto& data = w.archive.entries[static_cast<std::size_t>(room.collision_member)].data;
+    if (data.empty())
+        return fail_with(why, "room " + std::to_string(r.room) + " has no collision in the game's data");
+    RoomCollision original;
+    if (!parse_collision(data, &original, why))
+        return false;
+    RoomCollision c = original;
+    if (!r.edits.empty() && !apply_collision_edits(&c, original, r.edits, r.ground_limit, nullptr, why))
+        return false;
+    const std::size_t n = move_markers(&c, r.markers);
+    // unedited, only the markers' bytes may differ from the game's; edited, the game's own faces are taken as
+    // they are (some are not what a made face must be, and the game reads them), the rest checked as made
+    const std::string problem = r.edits.empty() ? only_markers_differ(c, data) : check_collision(c, original, true);
+    if (!problem.empty())
+        return fail_with(why, "the collision as changed: " + problem);
+    if (moved != nullptr)
+        *moved = n;
+    *out = std::move(c);
     return true;
 }
 
@@ -1248,9 +1308,39 @@ bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesy
     // the collisions
     std::map<int, std::vector<std::uint8_t>> collisions;
     std::map<int, int> collision_of;  // member -> the room that made it
+    std::set<int> kept;               // members that are the game's own collision, markers moved
     for (const auto& r : changes) {
         if (r.keep_collision) {
-            o.lines.push_back("room " + std::to_string(r.room) + ": the game's own grounds, walls and ceilings kept");
+            if (r.markers.empty() && r.edits.empty()) {
+                o.lines.push_back("room " + std::to_string(r.room) +
+                                  ": the game's own grounds, walls and ceilings kept");
+                continue;
+            }
+            // the game's own floor and walls, its markers moved: only those bytes change
+            RoomCollision kept_room;
+            std::size_t moved = 0;
+            std::string problem;
+            if (!kept_collision(w, r, &kept_room, &moved, &problem))
+                return fail_with(why, "room " + std::to_string(r.room) + ": " + problem);
+            const int member = w.rooms[static_cast<std::size_t>(r.room)].collision_member;
+            if (collision_of.count(member) != 0) {
+                return fail_with(why, "rooms " + std::to_string(collision_of[member]) + " and " +
+                                          std::to_string(r.room) + " share one collision: replace only one of them");
+            }
+            collision_of[member] = r.room;
+            collisions[member] = write_collision(kept_room);
+            if (r.edits.empty())
+                kept.insert(member);  // else checked as an edited collision
+            o.lines.push_back(
+                "room " + std::to_string(r.room) + ": the game's own grounds, walls and ceilings kept" +
+                (r.edits.empty() ? std::string()
+                                 : ", edited (" + std::to_string(kept_room.faces[kGround].size()) + " grounds, " +
+                                       std::to_string(kept_room.faces[kWall].size()) + " walls, " +
+                                       std::to_string(kept_room.faces[kCeiling].size()) + " ceilings)") +
+                ", " + std::to_string(moved) + " of " + std::to_string(r.markers.size()) + " markers moved");
+            for (const int other : rooms_sharing(w, r.room, member, true))
+                o.lines.push_back("room " + std::to_string(r.room) + ": " +
+                                  warning_text({RoomWarning::collision_shared, {std::to_string(other)}}));
             continue;
         }
         BuiltRoom b;
@@ -1309,9 +1399,15 @@ bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesy
                 RoomCollision c, original;
                 if (!parse_collision(again.archive.entries[e].data, &c, &problem))
                     return "entry " + std::to_string(e) + ": " + problem;
+                if (kept.count(static_cast<int>(e)) != 0) {
+                    problem = only_markers_differ(c, w.archive.entries[e].data);
+                    if (!problem.empty())
+                        return "entry " + std::to_string(e) + ": " + problem;
+                    continue;
+                }
                 if (!parse_collision(w.archive.entries[e].data, &original, &problem))
                     return problem;
-                problem = check_collision(c, original);
+                problem = check_collision(c, original, true);
                 if (!problem.empty())
                     return "entry " + std::to_string(e) + ": " + problem;
             }

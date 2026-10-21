@@ -666,17 +666,7 @@ bool build_collision(const CollisionSource& source, const RoomCollision& origina
             r.warnings.push_back({RoomWarning::name_kept, {name}});
     }
     // the markers moved
-    if (!rules.markers.empty()) {
-        auto list = markers(c);
-        for (auto& m : list) {
-            const auto moved = rules.markers.find(m.name);
-            if (moved == rules.markers.end())
-                continue;
-            m.place = {moved->second[0], moved->second[1], moved->second[2]};
-            m.extra = moved->second[3];
-        }
-        set_markers(&c, list);
-    }
+    move_markers(&c, rules.markers);
     for (int l = 0; l < 3; ++l) {
         if (c.faces[static_cast<std::size_t>(l)].size() > 0x7fff) {
             return fail("more than 32,767 faces of one kind (a node's first face is a 16-bit number)");
@@ -687,26 +677,9 @@ bool build_collision(const CollisionSource& source, const RoomCollision& origina
         return fail("no face: the model has no triangle with area");
 
     // the tree over a power-of-two square holding every face
-    std::int64_t lo[2] = {INT64_MAX, INT64_MAX}, hi[2] = {INT64_MIN, INT64_MIN};
-    for (const auto& list : c.faces) {
-        for (const auto& f : list) {
-            lo[0] = std::min<std::int64_t>(lo[0], f.bounds[0]);
-            lo[1] = std::min<std::int64_t>(lo[1], f.bounds[1]);
-            hi[0] = std::max<std::int64_t>(hi[0], f.bounds[2]);
-            hi[1] = std::max<std::int64_t>(hi[1], f.bounds[3]);
-        }
-    }
-    const std::int64_t extent = std::max(hi[0] - lo[0], hi[1] - lo[1]) + 2;
-    std::int64_t smallest = original.root(3) > 0 ? original.root(3) : 8192;
-    std::int64_t size = smallest * 2;
-    while (size < extent)
-        size *= 2;
-    if (size > (std::int64_t{1} << 30))
-        return fail("the room is wider than the game's numbers hold");
-    smallest = std::max(smallest, size >> (kTreeLevels - 1));
     std::array<std::vector<std::size_t>, 3> order;
-    build_tree(&c, static_cast<std::int32_t>((lo[0] + hi[0]) / 2), static_cast<std::int32_t>((lo[1] + hi[1]) / 2),
-               static_cast<std::int32_t>(size), static_cast<std::int32_t>(smallest), &order);
+    if (!place_tree(&c, original, &order, why))
+        return false;
     for (int l = 0; l < 3; ++l) {
         for (const std::size_t before : order[static_cast<std::size_t>(l)]) {
             r.face_triangles[static_cast<std::size_t>(l)].push_back(sources[static_cast<std::size_t>(l)][before]);
@@ -778,6 +751,105 @@ bool build_collision(const CollisionSource& source, const RoomCollision& origina
     return true;
 }
 
+bool place_tree(RoomCollision* c, const RoomCollision& original, std::array<std::vector<std::size_t>, 3>* order,
+                std::string* why) {
+    std::int64_t lo[2] = {INT64_MAX, INT64_MAX}, hi[2] = {INT64_MIN, INT64_MIN};
+    for (const auto& list : c->faces) {
+        for (const auto& f : list) {
+            lo[0] = std::min<std::int64_t>(lo[0], f.bounds[0]);
+            lo[1] = std::min<std::int64_t>(lo[1], f.bounds[1]);
+            hi[0] = std::max<std::int64_t>(hi[0], f.bounds[2]);
+            hi[1] = std::max<std::int64_t>(hi[1], f.bounds[3]);
+        }
+    }
+    if (lo[0] > hi[0]) {
+        if (why != nullptr)
+            *why = "no face";
+        return false;
+    }
+    const std::int64_t extent = std::max(hi[0] - lo[0], hi[1] - lo[1]) + 2;
+    std::int64_t smallest = original.root(3) > 0 ? original.root(3) : 8192;
+    std::int64_t size = smallest * 2;
+    while (size < extent)
+        size *= 2;
+    if (size > (std::int64_t{1} << 30)) {
+        if (why != nullptr)
+            *why = "the room is wider than the game's numbers hold";
+        return false;
+    }
+    smallest = std::max(smallest, size >> (kTreeLevels - 1));
+    build_tree(c, static_cast<std::int32_t>((lo[0] + hi[0]) / 2), static_cast<std::int32_t>((lo[1] + hi[1]) / 2),
+               static_cast<std::int32_t>(size), static_cast<std::int32_t>(smallest), order);
+    return true;
+}
+
+bool cast_ray(const RoomCollision& c, const std::array<double, 3>& from, const std::array<double, 3>& dir,
+              const std::function<bool(int, std::size_t)>& skip, RayHit* hit) {
+    const double dl = length(dir);
+    if (!(dl > 0))
+        return false;
+    const Vec3d d{dir[0] / dl, dir[1] / dl, dir[2] / dl};
+    const Vec3d o{from[0] * 4096.0, from[1] * 4096.0, from[2] * 4096.0};  // in 20.12, as the corners
+    double best = 1e300;
+    bool found = false;
+    for (int l = 0; l < 3; ++l) {
+        const auto& faces = c.faces[static_cast<std::size_t>(l)];
+        for (std::size_t j = 0; j < faces.size(); ++j) {
+            const RoomFace& f = faces[j];
+            if (f.corners < 3 || f.corners > 4 || (skip && skip(l, j)))
+                continue;
+            const Vec3d n = face_normal(f);
+            const double nl = length(n);
+            const double facing = dot(n, d);
+            if (!(nl > 0) || facing >= 0)
+                continue;  // seen edge on or from behind
+            const Vec3d to{f.v[0][0] - o[0], f.v[0][1] - o[1], f.v[0][2] - o[2]};
+            const double t = dot(n, to) / facing;
+            if (t < 0 || t >= best)
+                continue;
+            const Vec3d p{o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t};
+            bool inside = true;
+            for (std::size_t i = 0; i < f.corners && inside; ++i) {
+                const auto& a = f.v[i];
+                const auto& b = f.v[(i + 1) % f.corners];
+                const Vec3d edge{static_cast<double>(b[0]) - a[0], static_cast<double>(b[1]) - a[1],
+                                 static_cast<double>(b[2]) - a[2]};
+                const Vec3d at{p[0] - a[0], p[1] - a[1], p[2] - a[2]};
+                inside = dot(cross(edge, at), n) >= -1e-6 * nl * length(edge);
+            }
+            if (!inside)
+                continue;
+            best = t;
+            found = true;
+            if (hit != nullptr) {
+                hit->list = l;
+                hit->face = j;
+                hit->at = {p[0] / 4096.0, p[1] / 4096.0, p[2] / 4096.0};
+                hit->normal = {n[0] / nl, n[1] / nl, n[2] / nl};
+                hit->distance = t / 4096.0;
+            }
+        }
+    }
+    return found;
+}
+
+std::size_t move_markers(RoomCollision* c, const std::map<std::string, std::array<std::int32_t, 4>>& moved) {
+    if (moved.empty())
+        return 0;
+    std::size_t count = 0;
+    auto list = markers(*c);
+    for (auto& m : list) {
+        const auto to = moved.find(m.name);
+        if (to == moved.end())
+            continue;
+        m.place = {to->second[0], to->second[1], to->second[2]};
+        m.extra = to->second[3];
+        ++count;
+    }
+    set_markers(c, list);
+    return count;
+}
+
 std::string warning_text(const RoomWarning& w) {
     auto arg = [&](std::size_t k) { return k < w.args.size() ? w.args[k] : std::string(); };
     switch (w.kind) {
@@ -839,7 +911,21 @@ bool ground_under(const RoomCollision& c, double x, double z, double top, double
     return found;
 }
 
-std::string check_collision(const RoomCollision& built, const RoomCollision& original) {
+std::string check_collision(const RoomCollision& built, const RoomCollision& original, bool trust_original_faces) {
+    // the original's faces by their corners (as written, the unused ones zero)
+    using Corners = std::pair<std::uint16_t, std::array<std::array<std::int32_t, 3>, 4>>;
+    auto corners_of = [](const RoomFace& f) {
+        Corners k{f.corners, {}};
+        std::copy_n(f.v.begin(), std::min<std::size_t>(f.corners, 4), k.second.begin());
+        return k;
+    };
+    std::array<std::set<Corners>, 3> game;
+    if (trust_original_faces) {
+        for (std::size_t l = 0; l < 3; ++l) {
+            for (const auto& f : original.faces[l])
+                game[l].insert(corners_of(f));
+        }
+    }
     const auto bytes = write_collision(built);
     RoomCollision back;
     std::string why;
@@ -857,6 +943,8 @@ std::string check_collision(const RoomCollision& built, const RoomCollision& ori
             return "more faces of one kind than a node can point at";
         for (std::size_t j = 0; j < list.size(); ++j) {
             const RoomFace& f = list[j];
+            if (trust_original_faces && f.corners <= 4 && game[static_cast<std::size_t>(l)].count(corners_of(f)) != 0)
+                continue;  // the game's own face, as the game has it
             const std::string at = "list " + std::to_string(l) + " face " + std::to_string(j);
             if (f.corners < 3 || f.corners > 4)
                 return at + ": " + std::to_string(f.corners) + " corners";

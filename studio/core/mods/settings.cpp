@@ -106,11 +106,21 @@ Settings load_settings(const fs::path& root, std::string* note) {
                 read.mod = value;
             else if (key == "browser")
                 read.browser_tree = value != "list";
+            else if (key == "map_camera")
+                read.map_camera_fps = value == "first-person";
             else if (key == "theme")
                 read.theme = value;
             else if (key == "collection_1525")
                 read.collection_1525 = value;
-            else if (key == "cache_mb") {
+            else if (key == "browser_width" || key == "map_tree") {
+                // a share of the window: above 0, at most all of it
+                float share = 0.0f;
+                const auto r = std::from_chars(value.data(), value.data() + value.size(), share);
+                if (r.ec != std::errc() || r.ptr != value.data() + value.size() || !(share > 0.0f && share <= 1.0f))
+                    good = false;
+                else
+                    (key == "map_tree" ? read.map_tree : read.browser_width) = share;
+            } else if (key == "cache_mb") {
                 int mb = 0;
                 const auto r = std::from_chars(value.data(), value.data() + value.size(), mb);
                 if (r.ec != std::errc() || r.ptr != value.data() + value.size() || mb < 1)
@@ -162,6 +172,9 @@ bool save_settings(const Settings& s, std::string* why) {
             << "cache_mb = " << s.cache_mb << "\n"
             << "browser = " << (s.browser_tree ? "tree" : "list") << "\n"
             << "theme = " << s.theme << "\n"
+            << "browser_width = " << s.browser_width << "\n"
+            << "map_tree = " << s.map_tree << "\n"
+            << "map_camera = " << (s.map_camera_fps ? "first-person" : "orbit") << "\n"
             << "collection_1525 = " << s.collection_1525 << "\n";
         if (!out) {
             if (why != nullptr)

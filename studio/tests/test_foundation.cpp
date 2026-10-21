@@ -49,8 +49,13 @@ TEST(settings_defaults_and_bad_file) {
     CHECK(s.sounds_dump == "saves/dump/sounds");
     CHECK(s.cache_mb == 512);
     CHECK(s.browser_tree);
+    CHECK(s.browser_width == 0.42f && s.map_tree == 0.45f);
 
     s.browser_tree = false;
+    s.browser_width = 0.3f;
+    s.map_tree = 0.6f;
+    CHECK(!s.map_camera_fps);
+    s.map_camera_fps = true;
     s.mod = "My Mod";
     s.language = "es";
     s.cache_mb = 64;
@@ -60,6 +65,7 @@ TEST(settings_defaults_and_bad_file) {
     CHECK(again.language == "es");
     CHECK(again.cache_mb == 64);
     CHECK(!again.browser_tree);
+    CHECK(again.browser_width == 0.3f && again.map_tree == 0.6f && again.map_camera_fps);
 
     studio_test::write(settings_file(root), "this line has no equals sign\n");
     note.clear();

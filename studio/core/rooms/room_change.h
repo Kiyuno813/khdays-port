@@ -4,6 +4,7 @@
 // index in the world's table.
 #pragma once
 
+#include "core/rooms/collision_edits.h"
 #include "core/rooms/room_collision.h"
 #include "core/rooms/worlds.h"
 
@@ -34,7 +35,7 @@ enum class ObjectUse { model, hide, keep };
 struct RoomReplacement {
     std::string world;      // its code: tt, aw ...
     int room = -1;          // its index in the world's table
-    std::string model;      // the visible model's file, in the change's folder
+    std::string model;      // the visible model's file, in the change's folder; empty: none (markers_only)
     std::string kh2;        // the KH2 map it was made from (tt02); empty: a model of the modder's
     std::string collision;  // a separate collision model's, or empty: the visible one
     // the game's own grounds, walls and ceilings kept: only what is seen is
@@ -56,7 +57,15 @@ struct RoomReplacement {
     std::map<std::string, std::array<std::int32_t, 4>> markers;
     // gate models moved (by link key and model 0-4: their position x, y, z in 20.12)
     std::map<std::pair<int, int>, std::array<std::int32_t, 3>> gate_points;
+    // the collision edited by hand, over what the change makes otherwise (the game's kept, or the model's)
+    CollisionEdits edits;
 };
+
+// A change that keeps the game's room as it looks, moving only its markers and exits' models (and its
+// collision only as edited by hand).
+inline bool markers_only(const RoomReplacement& r) {
+    return r.model.empty();
+}
 
 std::filesystem::path rooms_folder(const std::filesystem::path& mod_dir, const std::string& code);
 std::filesystem::path change_file(const std::filesystem::path& mod_dir, const std::string& code, int room);
@@ -145,7 +154,7 @@ CollisionSource collision_source(const khdays::assets::ImportedModel& placed, bo
 // The world with the change's gate model points moved.
 void apply_gate_points(World* w, const RoomReplacement& r);
 
-// The use each of the room's objects gets (by member, in the room's order).
+// The use each of the room's objects gets (by member, in the room's order); all `keep` for markers_only.
 std::vector<std::pair<int, ObjectUse>> object_uses(const WorldRoom& room, const RoomReplacement& r);
 
 // The models the graphics dump names in a world's archive member
@@ -164,6 +173,10 @@ struct BuiltRoom {
 };
 bool build_room(const World& w, const std::filesystem::path& mod_dir, const RoomReplacement& r, BuiltRoom* out,
                 std::string* why);
+
+// The game's own collision of the change's room, edited by hand and its markers moved as the change says
+// (`moved`: how many of them the room has); what a change keeping the game's floor and walls writes.
+bool kept_collision(const World& w, const RoomReplacement& r, RoomCollision* out, std::size_t* moved, std::string* why);
 
 // The rooms that change with this one (sharing its collision or a model it
 // does not keep), as warnings.

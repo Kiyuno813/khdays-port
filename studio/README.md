@@ -44,7 +44,8 @@ last one stays in the line at the bottom too.
 
 "Themes" (top right) chooses the studio's colour palette, in the colours of
 KH1's, KH2's, KH3's, Days' or Melody of Memory's menus (MoM's unless another
-is chosen). It changes at once and is kept in the settings.
+is chosen), or Rosé Pine Moon's. It changes at once and is kept in the
+settings.
 
 1. **The catalog.** The left side lists every texture, 2D tile sheet, model,
    sound, text file and movie of the game. Graphics and sounds come from the
@@ -206,7 +207,13 @@ is chosen). It changes at once and is kept in the settings.
      places edited differently keep the first (red). Tiles drawn flipped and
      tiles drawn with several palettes are listed too.
 
-7. **A map.** The "Maps" kind lists each room of the mission worlds
+7. **A map.** An illustrated guide to everything below is in
+   `docs/map-editor/index.html`. While a room is shown, its picture fills the
+   right side and its controls -- replacing it, editing its collision, what is
+   picked, its lists -- sit in the left panel under the catalog; the line
+   between them, and the one between the two panels, are dragged to share the
+   space (a double click gives the first share back; both are kept in the
+   settings). The "Maps" kind lists each room of the mission worlds
    (`mi/wd/wd_<code>`, by its place in the world's table). A room is shown
    as the game draws it -- its models, their vertex colours and textures --
    and, when asked, its collision over them: the grounds a character stands
@@ -253,6 +260,54 @@ is chosen). It changes at once and is kept in the settings.
      your model, or to a face picked in the picture. An exit or a wall that
      opens that none of your faces takes stays where the game had it (its
      faces copied), so a replaced room keeps its ways out until you move them.
+   - **Markers and exits only.** "Markers and exits only" (under Replace,
+     before any model is chosen) keeps the game's room as it looks and plays
+     and moves only its markers and its exits' models: no model of your own.
+     Saving writes the world with the room's collision as the game has it, only
+     the moved markers' bytes changed; the change file has no `model` line. (A
+     replacement that keeps the game's floor and walls saves its moved markers
+     the same way.)
+   - **Edit collision** (the panel in the left column, or the button on the bar
+     over the picture -- one switch): the room's floor and walls changed by
+     hand, over the game's own (turned on for a room with no change yet, it
+     starts one keeping the game's room: nothing of your own needed) or over
+     those made from your model. While it is on, a click selects a face
+     (Ctrl+click adds or takes away, Shift+drag selects the faces facing you
+     inside a box); the selected faces can be removed (Delete), made grounds,
+     walls or ceilings, or given names (a gate, a wall that opens, surface
+     tags), or made one shape with "Convert to:" (a plane lying on them and
+     facing their way -- a wall stays upright --, a ramp, a box or a wedge
+     fitted over them; their kind and names kept when all share them; the faces
+     removed, one Undo bringing them back), which the handles then move, resize
+     and turn. Shapes -- a plane, a ramp, a box, a wedge -- are added over the
+     selected faces, fitted to them (a ramp rising the way they rise: the fix
+     for stairs whose steps came out as walls), or at the middle of the view,
+     and placed, turned and sized in their fields (their outline follows while
+     dragged); their faces become grounds, walls and ceilings by their slope,
+     as a model's do, unless its "Collision kind" makes them all grounds, walls
+     or ceilings (a `shape` line ending `as wall`...). The picked shape has
+     handles in the picture: Move (1) -- an arrow per axis, a square to slide
+     it over the ground, the turning ring around them --, Resize (2) -- a box
+     on each side, the opposite side staying --, Turn (3) -- a ring about the
+     up axis; Ctrl snaps to 0.25 units and 15 degrees, a right click while
+     dragging puts it back, Delete removes it when no face is selected. "Snap
+     to surfaces" (the bar over the picture) makes the Move square put the
+     shape's bottom middle where the pointer meets a surface -- a floor, a
+     wall's top, another shape -- a ring showing where; "Drop to ground" (End)
+     lowers or raises it until its bottom rests on the floor under it. Ctrl+Z /
+     Ctrl+Y (or Undo / Redo at the left of the bar over the picture) undo and
+     redo every change the room's change holds -- the hand edits, the markers
+     moved and the exits' models moved -- whether or not Edit collision is on.
+     The change file names each edited face by its kind and corners
+     (`face-remove`, `face-kind`, `face-names`) and each shape by a `shape`
+     line; an edit whose face the room no longer has (its model changed) is
+     said and does nothing. `--room-faces <code> <room> [<Mod>]` prints every
+     face of a room, the game's or as a mod writes it, in those lines' terms.
+   - **Camera** (the right end of the bar over the picture): Orbit circles the
+     point in front of it while you drag with the left button; First person
+     keeps the camera where it stands and looks around. Right or middle drag, W
+     A S D, Q E and the wheel move it the same in both; the choice is kept in
+     the settings.
    - **Markers and exits' models.** Pick a marker (where a character arriving
      through an exit appears) to move or turn it, or drop it "onto the
      ground"; the exits' models (the gate and its props, yellow) are moved by

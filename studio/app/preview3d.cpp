@@ -503,6 +503,9 @@ std::array<float, 3> orbit_eye_direction(float yaw, float pitch) {
     return {std::cos(p) * std::sin(y), std::sin(p), std::cos(p) * std::cos(y)};
 }
 
+// the orbit camera's view: 35 degrees over the picture's height
+constexpr float kOrbitFovY = 35.0f * 0.0174532925f;
+
 void orbit_move(std::array<float, 3>& target, float yaw, float pitch, float distance, float view_height, bool hovered) {
     if (!hovered || view_height <= 0.0f)
         return;
@@ -518,7 +521,7 @@ void orbit_move(std::array<float, 3>& target, float yaw, float pitch, float dist
     const ImGuiIO& io = ImGui::GetIO();
     if (ImGui::IsMouseDragging(ImGuiMouseButton_Right) || ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
         // a pixel at the point's distance: the 35-degree view over its height
-        const float per_pixel = 2.0f * distance * std::tan(35.0f * 0.5f * 0.0174532925f) / view_height;
+        const float per_pixel = 2.0f * distance * std::tan(kOrbitFovY * 0.5f) / view_height;
         add(right, -io.MouseDelta.x * per_pixel);
         add(up, io.MouseDelta.y * per_pixel);
     }
@@ -539,6 +542,18 @@ void orbit_move(std::array<float, 3>& target, float yaw, float pitch, float dist
         add({0, 1, 0}, -step);
 }
 
+std::array<float, 3> orbit_ray(float yaw, float pitch, float x, float y, float width, float height) {
+    // the camera's axes and field of view as orbit_view_projection makes them
+    const auto dir = orbit_eye_direction(yaw, pitch);
+    const std::array<float, 3> f{-dir[0], -dir[1], -dir[2]};
+    const auto s = normalized(cross(f, {0, 1, 0}));
+    const auto u = cross(s, f);
+    const float t = std::tan(kOrbitFovY * 0.5f);
+    const float nx = (x / std::max(1.0f, width)) * 2.0f - 1.0f, ny = 1.0f - (y / std::max(1.0f, height)) * 2.0f;
+    const float ax = nx * t * (width / std::max(1.0f, height)), ay = ny * t;
+    return normalized({f[0] + s[0] * ax + u[0] * ay, f[1] + s[1] * ax + u[1] * ay, f[2] + s[2] * ax + u[2] * ay});
+}
+
 Mat orbit_view_projection(std::array<float, 3> target, float yaw, float pitch, float distance, float aspect) {
     const auto dir = orbit_eye_direction(yaw, pitch);
     const std::array<float, 3> eye{target[0] + dir[0] * distance, target[1] + dir[1] * distance,
@@ -549,8 +564,8 @@ Mat orbit_view_projection(std::array<float, 3> target, float yaw, float pitch, f
     const auto u = cross(s, f);
     const Mat view{s[0], u[0], -f[0], 0, s[1],         u[1],         -f[1],       0,
                    s[2], u[2], -f[2], 0, -dot(s, eye), -dot(u, eye), dot(f, eye), 1};
-    const float fovy = 35.0f * 0.0174532925f, n = std::max(1e-3f, distance * 0.01f), fz = distance * 20.0f;
-    const float k = 1.0f / std::tan(fovy * 0.5f);
+    const float n = std::max(1e-3f, distance * 0.01f), fz = distance * 20.0f;
+    const float k = 1.0f / std::tan(kOrbitFovY * 0.5f);
     const Mat proj{k / aspect, 0, 0, 0, 0, k, 0, 0, 0, 0, (fz + n) / (n - fz), -1, 0, 0, 2 * fz * n / (n - fz), 0};
     return mat_mul(proj, view);
 }

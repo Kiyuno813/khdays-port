@@ -100,6 +100,8 @@ private:
 // A camera turning around `target`: yaw and pitch in degrees, `distance`.
 Mat orbit_view_projection(std::array<float, 3> target, float yaw, float pitch, float distance, float aspect);
 std::array<float, 3> orbit_eye_direction(float yaw, float pitch);
+// The way (unit length) from an orbit camera's eye through the point (x, y) of a `width` x `height` picture.
+std::array<float, 3> orbit_ray(float yaw, float pitch, float x, float y, float width, float height);
 
 // The point an orbit camera turns around, moved over a view `view_height`
 // pixels tall while the mouse is over it (`hovered`): dragged with the right

@@ -55,6 +55,50 @@ void take_dialog_files(App& app) {
 
 void draw_notices(App& app);  // below
 
+// The settings written now (a split let go of), a failure told.
+void save_now(App& app) {
+    std::string why;
+    if (!save_settings(app.settings, &why))
+        app.tell(fmt(app.language, S::save_failed, {why}), false);
+}
+
+constexpr float kSplitGrip = 8.0f;  // a split line's thickness to grab
+
+// A line the modder drags between two panels, `length` long: `*at` (pixels) moved by the drag within
+// `lo`..`hi`, back to `first` on a double click. `across`: a line across (dragged up and down), else upright.
+// `always_drawn`: else only while pointed at or dragged. True when let go or reset: the time to save it.
+bool split_line(const char* id, bool across, float length, float* at, float lo, float hi, float first,
+                bool always_drawn) {
+    const ImVec2 size =
+        across ? ImVec2(std::max(1.0f, length), kSplitGrip) : ImVec2(kSplitGrip, std::max(1.0f, length));
+    ImGui::InvisibleButton(id, size);
+    const bool hovered = ImGui::IsItemHovered(), active = ImGui::IsItemActive();
+    const bool reset = hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+    if (hovered || active)
+        ImGui::SetMouseCursor(across ? ImGuiMouseCursor_ResizeNS : ImGuiMouseCursor_ResizeEW);
+    if (active) {
+        const ImVec2 d = ImGui::GetIO().MouseDelta;
+        *at = std::clamp(*at + (across ? d.y : d.x), lo, hi);
+    }
+    if (reset)
+        *at = std::clamp(first, lo, hi);
+    if (always_drawn || hovered || active) {
+        const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+        const ImU32 colour = ImGui::GetColorU32(active    ? ImGuiCol_SeparatorActive
+                                                : hovered ? ImGuiCol_SeparatorHovered
+                                                          : ImGuiCol_Separator);
+        const float thickness = hovered || active ? 3.0f : 1.0f;
+        if (across) {
+            const float mid = 0.5f * (a.y + b.y);
+            ImGui::GetWindowDrawList()->AddLine(ImVec2(a.x, mid), ImVec2(b.x, mid), colour, thickness);
+        } else {
+            const float mid = 0.5f * (a.x + b.x);
+            ImGui::GetWindowDrawList()->AddLine(ImVec2(mid, a.y), ImVec2(mid, b.y), colour, thickness);
+        }
+    }
+    return ImGui::IsItemDeactivated() || reset;
+}
+
 void draw_frame(App& app, bool* settings_open, bool* themes_open, bool* console_open) {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
@@ -86,12 +130,53 @@ void draw_frame(App& app, bool* settings_open, bool* themes_open, bool* console_
 
     const float status_h = ImGui::GetFrameHeightWithSpacing();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
+    // the catalog takes a share of the width the modder drags at the line between the panels, each panel at
+    // least 200 wide
+    const float narrowest = std::min(200.0f, 0.5f * (avail.x - kSplitGrip));
+    const float widest = std::max(narrowest, avail.x - kSplitGrip - narrowest);
+    float left = std::clamp(app.settings.browser_width * avail.x, narrowest, widest);
     // what is wider than a panel can be scrolled to, never hidden past its edge
-    ImGui::BeginChild("##left", ImVec2(avail.x * 0.42f, avail.y - status_h), ImGuiChildFlags_Borders,
+    ImGui::BeginChild("##left", ImVec2(left, avail.y - status_h), ImGuiChildFlags_Borders,
                       ImGuiWindowFlags_HorizontalScrollbar);
-    draw_browser(app);
+    const Item* shown_room = app.selected >= 0 && app.selected < static_cast<int>(app.catalog.items.size()) &&
+                                     app.catalog.items[static_cast<std::size_t>(app.selected)].kind == Kind::room
+                                 ? &app.catalog.items[static_cast<std::size_t>(app.selected)]
+                                 : nullptr;
+    if (shown_room == nullptr) {
+        draw_browser(app);
+    } else {
+        // a room shown: the catalog over its controls, the line between them dragged, each at least 120 high
+        const float height = ImGui::GetContentRegionAvail().y;
+        const float lowest = std::min(120.0f, 0.5f * (height - kSplitGrip));
+        const float highest = std::max(lowest, height - kSplitGrip - lowest);
+        float top = std::clamp(app.settings.map_tree * height, lowest, highest);
+        const int room_selected = app.selected;
+        ImGui::BeginChild("##catalog", ImVec2(0, top), ImGuiChildFlags_None);
+        draw_browser(app);
+        ImGui::EndChild();
+        // the share kept only when the modder moves the line (a small window does not shrink it for good)
+        const bool let_go = split_line("##map_tree_split", true, ImGui::GetContentRegionAvail().x, &top, lowest,
+                                       highest, 0.45f * height, true);
+        if (height > 0.0f && (let_go || ImGui::IsItemActive()))
+            app.settings.map_tree = std::clamp(top / height, 0.01f, 1.0f);
+        if (let_go)
+            save_now(app);
+        // the room's controls, unless the catalog picked something else this frame (shown from the next)
+        ImGui::BeginChild("##room_controls", ImVec2(0, 0), ImGuiChildFlags_None);
+        if (app.selected == room_selected)
+            draw_map_controls(app, *shown_room);
+        ImGui::EndChild();
+    }
     ImGui::EndChild();
-    ImGui::SameLine();
+    // drawn only while pointed at or dragged: the panels' borders already show where it is
+    ImGui::SameLine(0.0f, 0.0f);
+    const bool let_go =
+        split_line("##browser_split", false, avail.y - status_h, &left, narrowest, widest, 0.42f * avail.x, false);
+    if (avail.x > 0.0f && (let_go || ImGui::IsItemActive()))
+        app.settings.browser_width = std::clamp(left / avail.x, 0.01f, 1.0f);
+    if (let_go)
+        save_now(app);
+    ImGui::SameLine(0.0f, 0.0f);
     ImGui::BeginChild("##right", ImVec2(0, avail.y - status_h), ImGuiChildFlags_Borders,
                       ImGuiWindowFlags_HorizontalScrollbar);
     draw_item(app);

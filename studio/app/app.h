@@ -166,6 +166,9 @@ struct MissionOverlay {
 };
 MissionOverlay& mission_overlay();
 void draw_map_view(App& app, const Item& item);
+// A room's controls (replacing it, editing its collision, what is picked, its lists), drawn in the left
+// panel under the catalog while a room is shown.
+void draw_map_controls(App& app, const Item& item);
 // A model file the modder offers for a game model (dropped, chosen, or the
 // one the mod holds), read as the port reads it.
 void model_offer(App& app, const Item& item, const std::filesystem::path& file);

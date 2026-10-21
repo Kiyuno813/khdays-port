@@ -17,7 +17,13 @@ struct Settings {
     std::string mod;           // the last mod opened
     int cache_mb = 512;        // the previews' memory budget (grows with use up to it)
     bool browser_tree = true;  // the catalog as folders (else one list)
-    std::string theme;         // the colour palette: kh1, kh2, kh3, days, mom; empty: MoM's
+    std::string theme;         // the colour palette: kh1, kh2, kh3, days, mom, rose-pine-moon; empty: MoM's
+    // the catalog's share of the window's width, dragged at the line beside it; while a room is shown, its
+    // share of the left panel's height (the room's controls under it)
+    float browser_width = 0.42f;
+    float map_tree = 0.45f;
+    // the Maps view's camera: looking around from where it stands (else orbiting the point in front of it)
+    bool map_camera_fps = false;
     // KINGDOM HEARTS HD 1.5+2.5 ReMIX's folder, KH2's rooms come from; empty: the one the install made
     // its HD pieces from (setup/state.json)
     std::string collection_1525;

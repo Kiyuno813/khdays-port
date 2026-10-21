@@ -148,6 +148,7 @@ add_library(khdays-studio-core STATIC
     core/mods/mods_log.cpp
     core/files/paths.cpp
     core/mods/process.cpp
+    core/rooms/collision_edits.cpp
     core/rooms/kh2_source.cpp
     core/rooms/room_change.cpp
     core/rooms/room_collision.cpp

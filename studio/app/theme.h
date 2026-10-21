@@ -14,7 +14,7 @@ namespace studio {
 // How many palettes there are.
 int theme_count();
 
-// A palette's id as studio.ini keeps it ("kh1", "kh2", "kh3", "days", "mom").
+// A palette's id as studio.ini keeps it ("kh1", "kh2", "kh3", "days", "mom", "rose-pine-moon").
 const char* theme_id(int index);
 
 // A palette's name in the list (the games' own names).

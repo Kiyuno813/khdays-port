@@ -1,4 +1,4 @@
-// The studio's colour palettes (theme.h): the five of the maintainer's MoM viewer
+// The studio's colour palettes (theme.h): the five of the maintainer's MoM viewer, and Rosé Pine Moon
 // (mom_viewer's web/style.css, "palette families drawn from the five Kingdom
 // Hearts menu references"), each colour where the viewer puts it -- the page,
 // the panels and floating windows, their title bars and the fields, the
@@ -25,9 +25,14 @@ const Palette kPalettes[] = {
     {"days", "Days", 0x09090b, 0x171517, 0x242123, 0x70202f, 0xf4eeee, 0xb6a9ad, 0x302026, 0xe3314b, 0xffdf45,
      0xbd1f37},
     {"mom", "MoM", 0x07132c, 0x0c1d43, 0x132d5c, 0x187dd2, 0xeff9ff, 0x9fc6e3, 0x12366a, 0x22c8f4, 0xf5d34a, 0x1359d8},
+    // Rosé Pine Moon (rosepinetheme.com/palette): base, surface, overlay, highlight high, text, subtle,
+    // highlight med, iris, rose, pine
+    {"rose-pine-moon", "Rosé Pine Moon", 0x232136, 0x2a273f, 0x393552, 0x56526e, 0xe0def4, 0x908caa, 0x44415a, 0xc4a7e7,
+     0xea9a97, 0x3e8fb0},
 };
 constexpr int kCount = static_cast<int>(sizeof(kPalettes) / sizeof(kPalettes[0]));
-constexpr int kDefault = kCount - 1;  // MoM, as the viewer
+constexpr int kDefault = 4;  // MoM, as the viewer
+static_assert(kDefault < kCount, "MoM's palette is in the list");
 
 const Palette* current = &kPalettes[kDefault];
 

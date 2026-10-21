@@ -8,6 +8,7 @@
 #include "core/models/game_model.h"
 #include "core/models/model_files.h"
 #include "core/files/paths.h"
+#include "core/rooms/collision_edits.h"
 #include "core/rooms/kh2_source.h"
 #include "core/rooms/room_change.h"
 #include "mods/room_animation.h"  // port/runtime: as the port moves a room
@@ -29,8 +30,11 @@ extern "C" {
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <deque>
 #include <atomic>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -78,6 +82,21 @@ struct Replacing {
     bool kh2_collision = false;    // that model the KH2 map's own floors and walls
     std::string placed_text;       // how the model was placed (lined up, as it is, or to place by hand)
     bool placed_ok = true;
+    // the collision edited by hand (r.edits) over `base` (the game's kept, or the model's made): `built` is
+    // base with the edits and markers; made again from base alone when only the edits changed
+    RoomCollision base;
+    bool edits_dirty = false;
+    EditsApplied applied;
+    std::map<FaceKey, FaceKey> shown_to_base;  // a face moved to another kind, as shown -> as the edit names it
+    std::string edit_error;
+    // what Undo and Redo step through: the hand edits, the markers moved and the exits' models moved
+    struct UndoStep {
+        CollisionEdits edits;
+        std::map<std::string, std::array<std::int32_t, 4>> markers;
+        std::map<std::pair<int, int>, std::array<std::int32_t, 3>> gate_points;
+    };
+    std::deque<UndoStep> undo, redo;
+    std::deque<UndoStep> parked_redo;  // Redo as it was before the last step kept, given back if it is taken back
 };
 
 struct MapView {
@@ -97,9 +116,40 @@ struct MapView {
     float yaw = 30.0f, pitch = 35.0f, distance = 40.0f;
     std::array<float, 3> target{0, 0, 0};
     int picked_list = -1, picked_face = -1, picked_marker = -1;
+    // an exit's model picked in the picture: its link key and which of its five models
+    bool picked_gate = false;
+    int picked_gate_key = 0, picked_gate_part = 0;
     std::unique_ptr<Preview> preview;
     Replacing rep;
     bool open_replace = false;  // the mod's replacement just opened: its panel shown open
+    // the picked marker's fields while one is held (dragged or typed in): kept from frame to frame, since the
+    // marker itself only moves when let go (the room is made again then)
+    struct MarkerEdit {
+        std::string name;
+        bool held = false;
+        float at[3] = {0, 0, 0};
+        float facing = 0;
+    } marker_edit;
+    // the collision editor: picking in the picture selects faces (as shown) and shapes
+    bool editing = false;
+    std::set<FaceKey> selected;
+    int picked_shape = -1;
+    // what the pointer was over in the last frame, while picking (drawn lighter): a face, and its shape
+    int hover_list = -1, hover_face = -1, hover_shape = -1;
+    bool box_on = false;  // a Shift+drag box being drawn from box_from
+    ImVec2 box_from{0, 0};
+    std::string names_text, shape_names_text;
+    FaceKey names_for;  // the face names_text was filled from
+    int shape_names_for = -1;
+    // the picked shape's handles: the mode (0 move, 1 resize, 2 turn), the handle dragged (-1: none) and
+    // what the drag started from (the shape, the pointer, the handle's pixels per unit of the game's)
+    int gizmo_mode = 0;
+    int gizmo_drag = -1;
+    bool snap_surface = false;  // the Move square puts the shape on the surface under the pointer
+    CollisionShape gizmo_start;
+    ImVec2 gizmo_from{0, 0}, gizmo_last{0, 0}, gizmo_centre{0, 0};
+    ImVec2 gizmo_pu[2]{};
+    float gizmo_turned = 0, gizmo_sign = 1;
 };
 
 MapView m;
@@ -337,9 +387,11 @@ void open(App& app) {
             p.active = p.from_mod = true;
             m.open_replace = true;
             const fs::path folder = change_models(mod->dir, m.world.code, index);
-            p.model_source = folder / path_u8(p.r.model);
-            if (!import_model(p.model_source, &p.raw, &why))
-                p.error = why;
+            if (!markers_only(p.r)) {
+                p.model_source = folder / path_u8(p.r.model);
+                if (!import_model(p.model_source, &p.raw, &why))
+                    p.error = why;
+            }
             if (!p.r.collision.empty()) {
                 p.collision_source = folder / path_u8(p.r.collision);
                 if (!import_model(p.collision_source, &p.raw_collision, &why))
@@ -351,6 +403,57 @@ void open(App& app) {
     }
 }
 
+// The hand edits and markers over the base collision, as the save applies them.
+void reapply_edits() {
+    Replacing& p = m.rep;
+    p.edits_dirty = false;
+    p.edit_error.clear();
+    p.built = p.base;
+    p.applied = EditsApplied{};
+    p.shown_to_base.clear();
+    if (!p.r.edits.empty()) {
+        std::string why;
+        if (!apply_collision_edits(&p.built, m.collision, p.r.edits, p.r.ground_limit, &p.applied, &why)) {
+            p.edit_error = why;
+            p.built = p.base;
+            p.applied = EditsApplied{};
+        } else {
+            const std::string problem = check_collision(p.built, m.collision, true);
+            if (!problem.empty())
+                p.edit_error = problem;
+        }
+        for (const auto& [key, fe] : p.r.edits.faces) {
+            if (!fe.removed && fe.list >= 0 && fe.list != key.list) {
+                FaceKey shown_key = key;
+                shown_key.list = fe.list;
+                p.shown_to_base[shown_key] = key;
+            }
+        }
+    }
+    for (int l = 0; l < 3; ++l) {
+        auto& of = p.applied.shape_of[static_cast<std::size_t>(l)];
+        if (of.size() != p.built.faces[static_cast<std::size_t>(l)].size())
+            of.assign(p.built.faces[static_cast<std::size_t>(l)].size(), -1);
+    }
+    move_markers(&p.built, p.r.markers);
+}
+
+// The game's own floor and walls as the change keeps them, its markers moved, as the save writes them;
+// the rooms sharing that collision said only when a marker moved (else nothing of it changes).
+void kept_room_built() {
+    Replacing& p = m.rep;
+    p.base = m.collision;
+    reapply_edits();
+    p.report = CollisionReport{};
+    p.built_ok = true;
+    p.r.world = m.world.code;
+    p.r.room = m.room->index;
+    for (auto& more : sharing_warnings(m.world, p.r)) {
+        if (more.kind != RoomWarning::collision_shared || !p.r.markers.empty())
+            p.warnings.push_back(std::move(more));
+    }
+}
+
 // The modder's model placed again and its collision made, as the save will.
 void rebuild() {
     Replacing& p = m.rep;
@@ -358,6 +461,17 @@ void rebuild() {
     p.built_ok = false;
     p.error.clear();
     p.warnings.clear();
+    if (p.active && p.model_source.empty()) {
+        // the game's room kept as it looks and plays: only its markers (and exits' models) moved
+        p.placed = {};
+        p.surfaces = {};
+        if (!m.has_collision) {
+            p.error = "this room has no collision in the game's data, so no markers to move";
+            return;
+        }
+        kept_room_built();
+        return;
+    }
     if (p.model_source.empty())
         return;
     p.placed = p.raw;
@@ -380,15 +494,7 @@ void rebuild() {
     }
     if (p.r.keep_collision) {
         // only the look replaced: the game's own floor and walls are the ones shown and saved
-        p.built = m.collision;
-        p.report = CollisionReport{};
-        p.built_ok = true;
-        p.r.world = m.world.code;
-        p.r.room = m.room->index;
-        for (auto& more : sharing_warnings(m.world, p.r)) {
-            if (more.kind != RoomWarning::collision_shared)
-                p.warnings.push_back(std::move(more));
-        }
+        kept_room_built();
         return;
     }
     CollisionRules rules;
@@ -407,11 +513,27 @@ void rebuild() {
         return;
     }
     p.built_ok = true;
+    p.base = p.built;
+    reapply_edits();
     p.warnings = p.report.warnings;
     p.r.world = m.world.code;
     p.r.room = m.room->index;
     for (auto& more : sharing_warnings(m.world, p.r))
         p.warnings.push_back(std::move(more));
+}
+
+// The shape a face shown was made of, -1 for the room's own.
+int shape_of_shown(int list, std::size_t j) {
+    if (!showing_built() || list < 0 || list > 2)
+        return -1;
+    const auto& of = m.rep.applied.shape_of[static_cast<std::size_t>(list)];
+    return j < of.size() ? of[j] : -1;
+}
+
+// The face an edit names, from the face as shown (moved to another kind, it is named by its first).
+FaceKey base_key(const FaceKey& shown_key) {
+    const auto it = m.rep.shown_to_base.find(shown_key);
+    return it != m.rep.shown_to_base.end() ? it->second : shown_key;
 }
 
 std::array<float, 3> corner(const RoomFace& f, std::size_t v) {
@@ -493,6 +615,13 @@ std::array<float, 3> skinned(const std::map<std::uint32_t, Mat>& moved, const as
         c /= total;
     return pos;
 }
+
+// the collision editor's (below): undo, the selected faces made a shape, its edits to be applied again
+void edit_push();
+void edit_unpush();
+void undo_field();
+void draw_convert_buttons(App& app);
+void edits_changed();
 
 void draw_room(App& app, ImVec2 size) {
     if (!m.preview)
@@ -612,6 +741,7 @@ void draw_room(App& app, ImVec2 size) {
     const std::array<float, 3> eye{m.target[0] + eye_dir[0] * m.distance, m.target[1] + eye_dir[1] * m.distance,
                                    m.target[2] + eye_dir[2] * m.distance};
     const float lift = m.show_models ? m.distance * 0.002f : 0.0f;
+    const bool editing_view = m.editing && showing_built();
     for (int l = 0; l < 3; ++l) {
         if (!show[l])
             continue;
@@ -623,6 +753,21 @@ void draw_room(App& app, ImVec2 size) {
             std::array<float, 3> tint = face_tint(l, f);
             if (l == m.picked_list && static_cast<int>(j) == m.picked_face)
                 tint = {1, 1, 1};
+            if (editing_view) {
+                // the collision editor's: the picked shape's faces gold, the selected faces bright blue, what
+                // the pointer is over lighter (a shape's every face, a face of the room's alone)
+                const int from = shape_of_shown(l, j);
+                const bool selected = from < 0 && !m.selected.empty() && m.selected.count(face_key(l, f)) != 0;
+                const bool over =
+                    from >= 0 ? from == m.hover_shape : l == m.hover_list && static_cast<int>(j) == m.hover_face;
+                if (from >= 0 && from == m.picked_shape)
+                    tint = over ? std::array<float, 3>{1.0f, 0.92f, 0.6f} : std::array<float, 3>{1.0f, 0.82f, 0.3f};
+                else if (selected)
+                    tint = over ? std::array<float, 3>{0.7f, 0.95f, 1.0f} : std::array<float, 3>{0.35f, 0.85f, 1.0f};
+                else if (over)
+                    tint = {std::min(1.0f, tint[0] * 0.5f + 0.5f), std::min(1.0f, tint[1] * 0.5f + 0.5f),
+                            std::min(1.0f, tint[2] * 0.5f + 0.5f)};
+            }
             // the face's normal from its corners, for the light
             const auto a = corner(f, 0), b = corner(f, 1), c = corner(f, 2);
             const std::array<float, 3> e0{b[0] - a[0], b[1] - a[1], b[2] - a[2]},
@@ -674,7 +819,18 @@ void draw_room(App& app, ImVec2 size) {
     // (green on its floor, yellow over it, red under or in it) with a line to that floor or surface
     int near_marker = -1;
     float best = 9.0f * ImGui::GetStyle().FontScaleDpi;
-    const std::vector<Marker> shown_markers = showing_built() ? markers(m.rep.built) : m.markers;
+    std::vector<Marker> shown_markers = showing_built() ? markers(m.rep.built) : m.markers;
+    // the marker being dragged in its fields: drawn where they put it already
+    if (showing_built() && m.marker_edit.held) {
+        for (auto& mk : shown_markers) {
+            if (mk.name != m.marker_edit.name)
+                continue;
+            for (std::size_t a = 0; a < 3; ++a)
+                mk.place[a] = static_cast<std::int32_t>(std::lround(m.marker_edit.at[a] * 4096.0));
+            mk.extra = static_cast<std::int32_t>(
+                std::lround(std::fmod(m.marker_edit.facing + 360.0f, 360.0f) * 65536.0f / 360.0f));
+        }
+    }
     const bool footings = yours && !m.rep.surfaces.triangles.empty();
     const ImU32 footing_colour[4] = {IM_COL32(170, 170, 170, 255), IM_COL32(80, 220, 100, 255),
                                      IM_COL32(255, 210, 60, 255), IM_COL32(255, 60, 60, 255)};
@@ -744,7 +900,10 @@ void draw_room(App& app, ImVec2 size) {
                 ImGui::SetTooltip("%s", pt.label.c_str());
         }
     }
-    // the exits' models (the world's gate models of this room's links), where the change puts them
+    // the exits' models (the world's gate models of this room's links), where the change puts them; the one
+    // nearest the pointer (nearer than any marker) can be picked
+    bool near_gate = false;
+    int near_gate_key = 0, near_gate_part = 0;
     if (m.show_markers) {
         for (const auto& link : m.room->links) {
             for (const auto& g : m.world.gate_models) {
@@ -763,33 +922,368 @@ void draw_room(App& app, ImVec2 size) {
                                  &x, &y)) {
                         continue;
                     }
-                    const float r = 5.0f;
+                    const bool picked =
+                        m.picked_gate && m.picked_gate_key == g.key && m.picked_gate_part == static_cast<int>(part);
+                    const float r = picked ? 7.0f : 5.0f;
                     list->AddQuadFilled(ImVec2(x, y - r), ImVec2(x + r, y), ImVec2(x, y + r), ImVec2(x - r, y),
-                                        IM_COL32(255, 210, 40, 230));
+                                        picked ? IM_COL32(255, 255, 255, 255) : IM_COL32(255, 210, 40, 230));
+                    const float d = std::hypot(x - mouse.x, y - mouse.y);
+                    if (hovered && d < best) {
+                        best = d, near_marker = -1;
+                        near_gate = true, near_gate_key = g.key, near_gate_part = static_cast<int>(part);
+                    }
                 }
             }
         }
     }
 
-    // a click picks the nearest marker, else the nearest face under the pointer
-    if (hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && ImGui::GetIO().MouseDragMaxDistanceSqr[0] < 16.0f) {
-        m.picked_marker = near_marker;
-        m.picked_list = m.picked_face = -1;
-        if (near_marker < 0) {
-            float nearest = 1e30f;
+    // the hand-made shapes' edges, where their fields put them now (drawn live while dragged)
+    if (showing_built()) {
+        const auto& shapes = m.rep.r.edits.shapes;
+        for (std::size_t s = 0; s < shapes.size(); ++s) {
+            const bool picked = static_cast<int>(s) == m.picked_shape;
+            const bool over = m.editing && static_cast<int>(s) == m.hover_shape;
+            const ImU32 colour = picked ? IM_COL32(255, 220, 90, 255)
+                                 : over ? IM_COL32(235, 225, 255, 255)
+                                        : IM_COL32(200, 180, 255, 150);
+            for (const auto& t : shape_triangles(shapes[s])) {
+                float xs[3], ys[3];
+                bool ok = true;
+                for (std::size_t v = 0; v < 3 && ok; ++v)
+                    ok = project(t[v], &xs[v], &ys[v]);
+                if (!ok)
+                    continue;
+                for (std::size_t v = 0; v < 3; ++v) {
+                    const std::size_t u = (v + 1) % 3;
+                    list->AddLine(ImVec2(xs[v], ys[v]), ImVec2(xs[u], ys[u]), colour, picked || over ? 2.0f : 1.0f);
+                }
+            }
+        }
+    }
+    // the picked shape's handles (the collision editor): move along an axis or over the ground, resize
+    // a side, turn about the up axis; Ctrl snaps. Measured from where the drag began, so snaps are exact.
+    int gizmo_hover = -1;
+    bool gizmo_used = false;  // a handle took the pointer this frame
+    {
+        auto& shapes = m.rep.r.edits.shapes;
+        const ImGuiIO& io = ImGui::GetIO();
+        if (!editing_view || m.picked_shape < 0 || m.picked_shape >= static_cast<int>(shapes.size())) {
+            m.gizmo_drag = -1;
+        } else {
+            CollisionShape& sh = shapes[static_cast<std::size_t>(m.picked_shape)];
+            if (hovered && !io.WantTextInput && m.gizmo_drag < 0) {
+                if (ImGui::IsKeyPressed(ImGuiKey_1, false))
+                    m.gizmo_mode = 0;
+                if (ImGui::IsKeyPressed(ImGuiKey_2, false))
+                    m.gizmo_mode = 1;
+                if (ImGui::IsKeyPressed(ImGuiKey_3, false))
+                    m.gizmo_mode = 2;
+            }
+            using V = std::array<float, 3>;
+            auto plus = [](const V& a, const V& b, float k) {
+                return V{a[0] + b[0] * k, a[1] + b[1] * k, a[2] + b[2] * k};
+            };
+            auto screen = [&](const V& q, ImVec2* o) {
+                float x, y;
+                if (!project(q, &x, &y))
+                    return false;
+                *o = ImVec2(x, y);
+                return true;
+            };
+            // pixels per unit of the game's along `dir` at `from` (measured over `len` units)
+            auto per_unit = [&](const V& from, const V& dir, float len, ImVec2* o) {
+                ImVec2 a, b;
+                if (!screen(from, &a) || !screen(plus(from, dir, len), &b))
+                    return false;
+                *o = ImVec2((b.x - a.x) / len, (b.y - a.y) / len);
+                return true;
+            };
+            auto seg_dist = [](ImVec2 p, ImVec2 a, ImVec2 b) {
+                const float dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+                const float t = l2 > 0 ? std::clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / l2, 0.0f, 1.0f) : 0.0f;
+                return std::hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+            };
+            // the surface under the pointer (the room's faces and the other shapes', not this one's)
+            const int picked = m.picked_shape;
+            std::array<double, 3> snap_at{};
+            bool snap_shown = false;
+            auto surface_under = [&](std::array<double, 3>* out) {
+                const auto dir = orbit_ray(m.yaw, m.pitch, mouse.x - at.x, mouse.y - at.y, static_cast<float>(w),
+                                           static_cast<float>(h));
+                RayHit hit;
+                if (!cast_ray(
+                        shown(), {eye[0], eye[1], eye[2]}, {dir[0], dir[1], dir[2]},
+                        [&](int l, std::size_t j) { return shape_of_shown(l, j) == picked; }, &hit))
+                    return false;
+                *out = hit.at;
+                return true;
+            };
+            const V axes[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+            const ImU32 axis_colour[3] = {IM_COL32(235, 85, 85, 255), IM_COL32(120, 215, 95, 255),
+                                          IM_COL32(85, 145, 245, 255)};
+            const ImU32 hot = IM_COL32(255, 245, 170, 255);
+            const bool plane = sh.kind == CollisionShape::plane;
+            const V centre = shape_point(sh, {0, plane ? 0.0f : 0.5f, 0});
+            // a Resize handle's place on the shape, in unit coordinates: the middle of the side along axis `i`
+            // towards `sign`
+            auto side = [&](int i, int sign) {
+                V u{0, plane ? 0.0f : 0.5f, 0};
+                if (i == 1)
+                    u[1] = sign > 0 ? 1.0f : 0.0f;
+                else
+                    u[static_cast<std::size_t>(i)] = 0.5f * static_cast<float>(sign);
+                return u;
+            };
+            ImVec2 c2;
+            const bool centre_seen = screen(centre, &c2);
+            // the handles of this mode, as screen shapes to draw and to point at
+            struct Handle {
+                int id;
+                ImVec2 a, b;  // an arrow from a to b, or a box at b
+                bool arrow;
+                ImU32 colour;
+            };
+            std::vector<Handle> handles;
+            std::vector<ImVec2> ring;
+            float px_per_unit = 0;
+            for (const auto& ax : axes) {
+                ImVec2 pu;
+                if (per_unit(centre, ax, 1.0f, &pu))
+                    px_per_unit = std::max(px_per_unit, std::hypot(pu.x, pu.y));
+            }
+            const float k = ImGui::GetStyle().FontScaleDpi > 0 ? ImGui::GetStyle().FontScaleDpi : 1.0f;
+            if (centre_seen && px_per_unit > 1e-4f) {
+                const float reach = 75.0f * k / px_per_unit;  // the arrows' length, in units
+                if (m.gizmo_mode == 0) {
+                    for (int i = 0; i < 3; ++i) {
+                        ImVec2 tip;
+                        if (screen(plus(centre, axes[i], reach), &tip) &&
+                            std::hypot(tip.x - c2.x, tip.y - c2.y) > 12.0f * k)
+                            handles.push_back({i, c2, tip, true, axis_colour[i]});
+                    }
+                    handles.push_back({3, c2, c2, false, IM_COL32(240, 240, 240, 255)});  // over the ground
+                }
+                if (m.gizmo_mode == 1) {
+                    for (int i = 0; i < 3; ++i) {
+                        if (plane && i == 1)
+                            continue;
+                        for (const int sign : {-1, 1}) {
+                            ImVec2 hp;
+                            if (screen(shape_point(sh, side(i, sign)), &hp))
+                                handles.push_back({10 + i * 2 + (sign > 0 ? 1 : 0), c2, hp, false, axis_colour[i]});
+                        }
+                    }
+                } else {
+                    // the turning ring: in Turn, and around the arrows in Move (as Blender's)
+                    const float radius = 0.6f * std::max(sh.size[0], sh.size[2]) + 0.5f;
+                    for (int n = 0; n <= 64; ++n) {
+                        const float t = static_cast<float>(n) / 64.0f * 6.2831853f;
+                        ImVec2 q;
+                        if (screen(V{sh.at[0] + std::sin(t) * radius, sh.at[1], sh.at[2] + std::cos(t) * radius}, &q))
+                            ring.push_back(q);
+                    }
+                }
+            }
+            // what the pointer is over
+            if (hovered && m.gizmo_drag < 0 && !m.box_on) {
+                float best_px = 8.0f * k;
+                for (const auto& hd : handles) {
+                    const float d =
+                        hd.arrow ? seg_dist(mouse, hd.a, hd.b) : std::hypot(mouse.x - hd.b.x, mouse.y - hd.b.y);
+                    if (d < best_px)
+                        best_px = d, gizmo_hover = hd.id;
+                }
+                for (std::size_t n = 1; n < ring.size(); ++n) {
+                    const float d = seg_dist(mouse, ring[n - 1], ring[n]);
+                    if (d < best_px)
+                        best_px = d, gizmo_hover = 20;
+                }
+            }
+            // a drag begins: the shape as it was kept, and how the handle moves on the screen
+            if (gizmo_hover >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !io.KeyShift) {
+                edit_push();
+                m.gizmo_drag = gizmo_hover;
+                m.gizmo_start = sh;
+                m.gizmo_from = m.gizmo_last = mouse;
+                m.gizmo_turned = 0;
+                const int id = gizmo_hover;
+                bool ok = true;
+                if (id <= 2) {
+                    ok = per_unit(centre, axes[id], 1.0f, &m.gizmo_pu[0]);
+                } else if (id == 3) {
+                    ok = per_unit(centre, axes[0], 1.0f, &m.gizmo_pu[0]) &&
+                         per_unit(centre, axes[2], 1.0f, &m.gizmo_pu[1]);
+                } else if (id < 20) {
+                    const int i = (id - 10) / 2, sign = (id - 10) % 2 ? 1 : -1;
+                    const V dir = plus(V{0, 0, 0}, shape_axis(sh, i), static_cast<float>(sign));
+                    ok = per_unit(shape_point(sh, side(i, sign)), dir, 1.0f, &m.gizmo_pu[0]);
+                } else {
+                    // which way the ring turns on the screen: +turn goes from +z towards +x
+                    ImVec2 a, b, o;
+                    ok = screen(sh.at, &o) && screen(plus(sh.at, axes[2], 1.0f), &a) &&
+                         screen(plus(sh.at, axes[0], 1.0f), &b);
+                    m.gizmo_centre = o;
+                    m.gizmo_sign = (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x) > 0 ? 1.0f : -1.0f;
+                }
+                if (!ok) {
+                    m.gizmo_drag = -1;
+                    edit_unpush();  // nothing to drag: no step kept
+                }
+            }
+            // dragged: the shape as the drag puts it; let go: its faces made again
+            if (m.gizmo_drag >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                // a right click while dragging: the shape back as it was, nothing kept to undo
+                sh = m.gizmo_start;
+                edit_unpush();
+                m.gizmo_drag = -1;
+                gizmo_used = true;
+            }
+            if (m.gizmo_drag >= 0) {
+                gizmo_used = true;
+                if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                    const ImVec2 total(mouse.x - m.gizmo_from.x, mouse.y - m.gizmo_from.y);
+                    const bool snap = io.KeyCtrl;
+                    auto snapped = [&](float v, float step) { return snap ? std::round(v / step) * step : v; };
+                    auto along = [&](ImVec2 pu) {
+                        const float l2 = pu.x * pu.x + pu.y * pu.y;
+                        return l2 > 1e-8f ? (total.x * pu.x + total.y * pu.y) / l2 : 0.0f;
+                    };
+                    const CollisionShape& s0 = m.gizmo_start;
+                    const int id = m.gizmo_drag;
+                    if (id <= 2) {
+                        sh.at = s0.at;
+                        sh.at[static_cast<std::size_t>(id)] =
+                            snapped(s0.at[static_cast<std::size_t>(id)] + along(m.gizmo_pu[0]), 0.25f);
+                    } else if (id == 3 && m.snap_surface && surface_under(&snap_at)) {
+                        // onto the surface under the pointer: its bottom's middle where the pointer meets it
+                        sh.at = s0.at;
+                        sh.at[0] = snapped(static_cast<float>(snap_at[0]), 0.25f);
+                        sh.at[1] = static_cast<float>(snap_at[1]);
+                        sh.at[2] = snapped(static_cast<float>(snap_at[2]), 0.25f);
+                        snap_shown = true;
+                    } else if (id == 3) {
+                        const ImVec2 sx = m.gizmo_pu[0], sz = m.gizmo_pu[1];
+                        const float det = sx.x * sz.y - sx.y * sz.x;
+                        if (std::abs(det) > 1e-6f) {
+                            const float dx = (total.x * sz.y - total.y * sz.x) / det;
+                            const float dz = (sx.x * total.y - sx.y * total.x) / det;
+                            sh.at = s0.at;
+                            sh.at[0] = snapped(s0.at[0] + dx, 0.25f);
+                            sh.at[2] = snapped(s0.at[2] + dz, 0.25f);
+                        }
+                    } else if (id < 20) {
+                        const int i = (id - 10) / 2;
+                        const float sign = (id - 10) % 2 ? 1.0f : -1.0f;
+                        const float before = s0.size[static_cast<std::size_t>(i)];
+                        float now = std::max(0.05f, before + along(m.gizmo_pu[0]));
+                        if (snap)
+                            now = std::max(0.25f, std::round(now / 0.25f) * 0.25f);
+                        const float grown = now - before;
+                        sh.size = s0.size;
+                        sh.size[static_cast<std::size_t>(i)] = now;
+                        // the other side stays where it was
+                        const V ax = shape_axis(s0, i);
+                        const float shift = i == 1 ? (sign < 0 ? -grown : 0.0f) : sign * grown / 2;
+                        sh.at = plus(s0.at, ax, shift);
+                    } else {
+                        const float a0 =
+                            std::atan2(m.gizmo_last.y - m.gizmo_centre.y, m.gizmo_last.x - m.gizmo_centre.x);
+                        const float a1 = std::atan2(mouse.y - m.gizmo_centre.y, mouse.x - m.gizmo_centre.x);
+                        float d = a1 - a0;
+                        while (d > 3.14159265f)
+                            d -= 6.2831853f;
+                        while (d < -3.14159265f)
+                            d += 6.2831853f;
+                        m.gizmo_turned += d;
+                        m.gizmo_last = mouse;
+                        float yaw = snapped(s0.turn[1] + m.gizmo_sign * m.gizmo_turned * 57.2957795f, 15.0f);
+                        yaw = std::fmod(yaw, 360.0f);
+                        if (yaw > 180.0f)
+                            yaw -= 360.0f;
+                        if (yaw <= -180.0f)
+                            yaw += 360.0f;
+                        sh.turn = s0.turn;
+                        sh.turn[1] = yaw;
+                    }
+                } else {
+                    // let go: its faces made again, or (not moved) no step left to undo
+                    m.gizmo_drag = -1;
+                    if (sh == m.gizmo_start)
+                        edit_unpush();
+                    else
+                        edits_changed();
+                }
+            }
+            // drawn over everything, the one pointed at or dragged lit
+            const int lit = m.gizmo_drag >= 0 ? m.gizmo_drag : gizmo_hover;
+            for (const auto& hd : handles) {
+                const ImU32 col = hd.id == lit ? hot : hd.colour;
+                if (hd.arrow) {
+                    list->AddLine(hd.a, hd.b, col, 3.0f * k);
+                    const float dx = hd.b.x - hd.a.x, dy = hd.b.y - hd.a.y, l = std::max(1.0f, std::hypot(dx, dy));
+                    const float ux = dx / l, uy = dy / l, s = 9.0f * k;
+                    list->AddTriangleFilled(ImVec2(hd.b.x + ux * s, hd.b.y + uy * s),
+                                            ImVec2(hd.b.x - uy * s * 0.6f, hd.b.y + ux * s * 0.6f),
+                                            ImVec2(hd.b.x + uy * s * 0.6f, hd.b.y - ux * s * 0.6f), col);
+                } else {
+                    const float s = (hd.id == 3 ? 6.0f : 5.0f) * k;
+                    list->AddRectFilled(ImVec2(hd.b.x - s, hd.b.y - s), ImVec2(hd.b.x + s, hd.b.y + s), col);
+                    list->AddRect(ImVec2(hd.b.x - s, hd.b.y - s), ImVec2(hd.b.x + s, hd.b.y + s),
+                                  IM_COL32(20, 20, 30, 255));
+                }
+            }
+            if (ring.size() > 1)
+                list->AddPolyline(ring.data(), static_cast<int>(ring.size()), lit == 20 ? hot : axis_colour[1], 0,
+                                  (lit == 20 ? 3.5f : 2.5f) * k);
+            // where the surface snap puts it: a ring on the surface
+            ImVec2 sp;
+            if (snap_shown && screen(V{static_cast<float>(snap_at[0]), static_cast<float>(snap_at[1]),
+                                       static_cast<float>(snap_at[2])},
+                                     &sp)) {
+                list->AddCircle(sp, 9.0f * k, IM_COL32(255, 245, 170, 255), 0, 2.5f * k);
+                list->AddCircleFilled(sp, 3.0f * k, IM_COL32(255, 245, 170, 255));
+            }
+            // which mode, in the picture's lower corner
+            const S modes[3] = {S::map_gizmo_move, S::map_gizmo_size, S::map_gizmo_turn};
+            const std::string label =
+                std::string(tr(app.language, modes[m.gizmo_mode])) + "   " + tr(app.language, S::map_gizmo_keys);
+            list->AddText(ImVec2(at.x + 8.0f, at.y + static_cast<float>(h) - ImGui::GetFontSize() - 6.0f),
+                          IM_COL32(240, 240, 240, 230), label.c_str());
+        }
+    }
+    const bool gizmo_owns = gizmo_used || gizmo_hover >= 0;
+    // Shift+drag in the collision editor: the faces facing the viewer wholly inside the box selected
+    bool boxed = false;
+    if (editing_view && hovered && !gizmo_owns && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        ImGui::GetIO().KeyShift) {
+        m.box_on = true;
+        m.box_from = mouse;
+    }
+    if (m.box_on) {
+        const ImVec2 lo(std::min(m.box_from.x, mouse.x), std::min(m.box_from.y, mouse.y));
+        const ImVec2 hi(std::max(m.box_from.x, mouse.x), std::max(m.box_from.y, mouse.y));
+        list->AddRectFilled(lo, hi, IM_COL32(90, 200, 255, 40));
+        list->AddRect(lo, hi, IM_COL32(90, 200, 255, 220), 0.0f, 0, 1.5f);
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            m.box_on = false;
+            boxed = true;
+            if (!ImGui::GetIO().KeyCtrl)
+                m.selected.clear();
             for (int l = 0; l < 3; ++l) {
                 if (!show[l])
                     continue;
                 const auto& faces = shown().faces[static_cast<std::size_t>(l)];
                 for (std::size_t j = 0; j < faces.size(); ++j) {
                     const RoomFace& f = faces[j];
-                    float xs[4], ys[4];
-                    bool ok = true;
-                    for (std::size_t v = 0; v < f.corners && v < 4 && ok; ++v)
-                        ok = project(corner(f, v), &xs[v], &ys[v]);
-                    if (!ok || f.corners < 3)
+                    if (f.corners < 3 || shape_of_shown(l, j) >= 0)
                         continue;
-                    // not seen from behind (as drawn)
+                    bool inside = true;
+                    for (std::size_t v = 0; v < f.corners && inside; ++v) {
+                        float x, y;
+                        inside = project(corner(f, v), &x, &y) && x >= lo.x && x <= hi.x && y >= lo.y && y <= hi.y;
+                    }
+                    if (!inside)
+                        continue;
                     const auto a = corner(f, 0), b = corner(f, 1), c2 = corner(f, 2);
                     const std::array<float, 3> e0{b[0] - a[0], b[1] - a[1], b[2] - a[2]},
                         e1{c2[0] - a[0], c2[1] - a[1], c2[2] - a[2]};
@@ -797,40 +1291,172 @@ void draw_room(App& app, ImVec2 size) {
                                                  e0[0] * e1[1] - e0[1] * e1[0]};
                     if (n[0] * (eye[0] - a[0]) + n[1] * (eye[1] - a[1]) + n[2] * (eye[2] - a[2]) <= 0.0f)
                         continue;
-                    // inside the projected polygon (either winding)
-                    int sign = 0;
-                    bool inside = true;
-                    for (std::size_t v = 0; v < f.corners && inside; ++v) {
-                        const std::size_t u = (v + 1) % f.corners;
-                        const float cross = (xs[u] - xs[v]) * (mouse.y - ys[v]) - (ys[u] - ys[v]) * (mouse.x - xs[v]);
-                        const int s = cross > 0 ? 1 : cross < 0 ? -1 : 0;
-                        if (s != 0 && sign != 0 && s != sign)
-                            inside = false;
-                        if (s != 0)
-                            sign = s;
-                    }
-                    if (!inside)
-                        continue;
-                    std::array<float, 3> centre{0, 0, 0};
-                    for (std::size_t v = 0; v < f.corners; ++v) {
-                        const auto q = corner(f, v);
-                        for (std::size_t c = 0; c < 3; ++c)
-                            centre[c] += q[c] / static_cast<float>(f.corners);
-                    }
-                    const float d = std::hypot(centre[0] - eye[0], centre[1] - eye[1], centre[2] - eye[2]);
-                    if (d < nearest)
-                        nearest = d, m.picked_list = l, m.picked_face = static_cast<int>(j);
+                    m.selected.insert(face_key(l, f));
                 }
             }
+            m.picked_shape = -1;
         }
-    } else if (hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+    }
+    if (near_gate) {
+        ImGui::SetTooltip("%s", fmt(app.language, S::map_gate_part,
+                                    {std::to_string(near_gate_key), std::to_string(near_gate_part), "-"})
+                                    .c_str());
+    }
+    // the nearest face of the lists shown under the pointer, facing the viewer (-1: none)
+    auto face_under_pointer = [&](int* list_out, int* face_out) {
+        *list_out = *face_out = -1;
+        float nearest = 1e30f;
+        for (int l = 0; l < 3; ++l) {
+            if (!show[l])
+                continue;
+            const auto& faces = shown().faces[static_cast<std::size_t>(l)];
+            for (std::size_t j = 0; j < faces.size(); ++j) {
+                const RoomFace& f = faces[j];
+                float xs[4], ys[4];
+                bool ok = true;
+                for (std::size_t v = 0; v < f.corners && v < 4 && ok; ++v)
+                    ok = project(corner(f, v), &xs[v], &ys[v]);
+                if (!ok || f.corners < 3)
+                    continue;
+                // not seen from behind (as drawn)
+                const auto a = corner(f, 0), b = corner(f, 1), c2 = corner(f, 2);
+                const std::array<float, 3> e0{b[0] - a[0], b[1] - a[1], b[2] - a[2]},
+                    e1{c2[0] - a[0], c2[1] - a[1], c2[2] - a[2]};
+                const std::array<float, 3> n{e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
+                                             e0[0] * e1[1] - e0[1] * e1[0]};
+                if (n[0] * (eye[0] - a[0]) + n[1] * (eye[1] - a[1]) + n[2] * (eye[2] - a[2]) <= 0.0f)
+                    continue;
+                // inside the projected polygon (either winding)
+                int sign = 0;
+                bool inside = true;
+                for (std::size_t v = 0; v < f.corners && inside; ++v) {
+                    const std::size_t u = (v + 1) % f.corners;
+                    const float cross = (xs[u] - xs[v]) * (mouse.y - ys[v]) - (ys[u] - ys[v]) * (mouse.x - xs[v]);
+                    const int s = cross > 0 ? 1 : cross < 0 ? -1 : 0;
+                    if (s != 0 && sign != 0 && s != sign)
+                        inside = false;
+                    if (s != 0)
+                        sign = s;
+                }
+                if (!inside)
+                    continue;
+                std::array<float, 3> centre{0, 0, 0};
+                for (std::size_t v = 0; v < f.corners; ++v) {
+                    const auto q = corner(f, v);
+                    for (std::size_t c = 0; c < 3; ++c)
+                        centre[c] += q[c] / static_cast<float>(f.corners);
+                }
+                const float d = std::hypot(centre[0] - eye[0], centre[1] - eye[1], centre[2] - eye[2]);
+                if (d < nearest)
+                    nearest = d, *list_out = l, *face_out = static_cast<int>(j);
+            }
+        }
+    };
+    // while picking: what the pointer is over, drawn lighter next frame (nothing while over a marker or an
+    // exit's model, which a click would pick instead, or while a box is drawn)
+    m.hover_list = m.hover_face = m.hover_shape = -1;
+    if (editing_view && hovered && !m.box_on && !gizmo_owns && near_marker < 0 && !near_gate &&
+        !ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        face_under_pointer(&m.hover_list, &m.hover_face);
+        if (m.hover_face >= 0)
+            m.hover_shape = shape_of_shown(m.hover_list, static_cast<std::size_t>(m.hover_face));
+    }
+    // a click picks the nearest marker or exit's model, else the nearest face under the pointer
+    if (!boxed && !m.box_on && !gizmo_owns && hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+        ImGui::GetIO().MouseDragMaxDistanceSqr[0] < 16.0f) {
+        m.picked_marker = near_marker;
+        m.picked_list = m.picked_face = -1;
+        m.picked_gate = near_gate;
+        m.picked_gate_key = near_gate_key;
+        m.picked_gate_part = near_gate_part;
+        if (near_marker < 0 && !near_gate)
+            face_under_pointer(&m.picked_list, &m.picked_face);
+        if (editing_view) {
+            // a click selects the face (Ctrl: adds it or takes it away), or the shape it was made of
+            const bool add = ImGui::GetIO().KeyCtrl;
+            if (m.picked_face >= 0) {
+                const int from = shape_of_shown(m.picked_list, static_cast<std::size_t>(m.picked_face));
+                if (from >= 0) {
+                    m.picked_shape = from;
+                    if (!add)
+                        m.selected.clear();
+                } else {
+                    const FaceKey key = face_key(m.picked_list, shown().faces[static_cast<std::size_t>(m.picked_list)]
+                                                                             [static_cast<std::size_t>(m.picked_face)]);
+                    m.picked_shape = -1;
+                    if (!add)
+                        m.selected = {key};
+                    else if (m.selected.erase(key) == 0)
+                        m.selected.insert(key);
+                }
+            } else if (!add && near_marker < 0 && !near_gate) {
+                m.selected.clear();
+                m.picked_shape = -1;
+            }
+        }
+    } else if (hovered && !m.box_on && !gizmo_owns && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        // orbiting: around the point in front of the camera; first person: looking around from where the
+        // camera stands, the eye kept and that point moved in front of it the way it now looks
         const ImVec2 d = ImGui::GetIO().MouseDelta;
+        const auto before = orbit_eye_direction(m.yaw, m.pitch);
+        const std::array<float, 3> stand{m.target[0] + before[0] * m.distance, m.target[1] + before[1] * m.distance,
+                                         m.target[2] + before[2] * m.distance};
         m.yaw -= d.x * 0.4f;
         m.pitch = std::clamp(m.pitch + d.y * 0.4f, -85.0f, 85.0f);
+        if (app.settings.map_camera_fps) {
+            const auto after = orbit_eye_direction(m.yaw, m.pitch);
+            m.target = {stand[0] - after[0] * m.distance, stand[1] - after[1] * m.distance,
+                        stand[2] - after[2] * m.distance};
+        }
     }
     orbit_move(m.target, m.yaw, m.pitch, m.distance, static_cast<float>(h), hovered);
     if (hovered && ImGui::GetIO().MouseWheel != 0.0f)
         m.distance *= std::pow(0.9f, ImGui::GetIO().MouseWheel);
+}
+
+// The exit's model picked in the picture: where it stands, moved while its fields are dragged (any change of
+// the room saves its exits' models' places), back to the game's place on request.
+void draw_picked_gate(App& app) {
+    const auto lang = app.language;
+    Replacing& p = m.rep;
+    const GateModelPart* part = nullptr;
+    for (const auto& g : m.world.gate_models) {
+        if (g.key == m.picked_gate_key && m.picked_gate_part >= 0 && m.picked_gate_part < 5)
+            part = &g.parts[static_cast<std::size_t>(m.picked_gate_part)];
+    }
+    if (part == nullptr) {
+        m.picked_gate = false;
+        return;
+    }
+    const std::pair<int, int> id{m.picked_gate_key, m.picked_gate_part};
+    const auto moved = p.r.gate_points.find(id);
+    const auto at = p.active && moved != p.r.gate_points.end() ? moved->second : part->position;
+    const std::string label =
+        fmt(lang, S::map_gate_part,
+            {std::to_string(m.picked_gate_key), std::to_string(m.picked_gate_part), std::to_string(part->member)});
+    float v[3] = {static_cast<float>(at[0]) * kFx, static_cast<float>(at[1]) * kFx, static_cast<float>(at[2]) * kFx};
+    ImGui::TextUnformatted(label.c_str());
+    if (!p.active) {
+        ImGui::TextUnformatted(
+            fmt(lang, S::map_gate_at, {std::to_string(v[0]), std::to_string(v[1]), std::to_string(v[2])}).c_str());
+        ImGui::TextDisabled("%s", tr(lang, S::map_gate_move_hint));
+        return;
+    }
+    ImGui::SetNextItemWidth(20 * ImGui::GetFontSize());
+    const bool dragged = ImGui::DragFloat3(tr(lang, S::map_marker_place), v, 0.02f, -100000.0f, 100000.0f, "%.2f");
+    undo_field();  // the exits' models as they were, for undo
+    if (dragged) {
+        p.r.gate_points[id] = {static_cast<std::int32_t>(std::lround(v[0] * 4096.0)),
+                               static_cast<std::int32_t>(std::lround(v[1] * 4096.0)),
+                               static_cast<std::int32_t>(std::lround(v[2] * 4096.0))};
+    }
+    if (moved != p.r.gate_points.end()) {
+        same_line_if_room(button_width(tr(lang, S::map_gate_reset)));
+        if (ImGui::SmallButton(tr(lang, S::map_gate_reset))) {
+            edit_push();
+            p.r.gate_points.erase(id);
+        }
+    }
 }
 
 void draw_details(App& app) {
@@ -838,14 +1464,23 @@ void draw_details(App& app) {
     const std::vector<Marker> shown_markers = showing_built() ? markers(m.rep.built) : m.markers;
     if (m.picked_marker >= static_cast<int>(shown_markers.size()))
         m.picked_marker = -1;
-    if (m.picked_marker >= 0 && showing_built()) {
+    if (m.picked_gate) {
+        draw_picked_gate(app);
+    } else if (m.picked_marker >= 0 && showing_built()) {
         // moved on the new room: where the change puts it
         Replacing& p = m.rep;
         const Marker& mk = shown_markers[static_cast<std::size_t>(m.picked_marker)];
-        float at[3] = {static_cast<float>(mk.place[0]) * kFx, static_cast<float>(mk.place[1]) * kFx,
-                       static_cast<float>(mk.place[2]) * kFx};
-        float facing = static_cast<float>(mk.extra) * 360.0f / 65536.0f;
-        bool moved = false;
+        // the fields hold their own values while held, else the marker's as the room has it now
+        auto& e = m.marker_edit;
+        if (!e.held || e.name != mk.name) {
+            e.name = mk.name;
+            for (std::size_t a = 0; a < 3; ++a)
+                e.at[a] = static_cast<float>(mk.place[a]) * kFx;
+            e.facing = static_cast<float>(mk.extra) * 360.0f / 65536.0f;
+        }
+        float* at = e.at;
+        float& facing = e.facing;
+        bool moved = false, held = false;
         ImGui::TextUnformatted(mk.name.c_str());
         if (mk.name.rfind("pent", 0) == 0) {
             ImGui::SameLine();
@@ -853,17 +1488,24 @@ void draw_details(App& app) {
         }
         ImGui::SetNextItemWidth(20 * ImGui::GetFontSize());
         ImGui::DragFloat3(tr(lang, S::map_marker_place), at, 0.02f, -100000.0f, 100000.0f, "%.2f");
+        undo_field();  // the markers as they were, for undo
         moved |= ImGui::IsItemDeactivatedAfterEdit();
+        held |= ImGui::IsItemActive();
         ImGui::SetNextItemWidth(8 * ImGui::GetFontSize());
         ImGui::DragFloat(tr(lang, S::map_marker_facing), &facing, 1.0f, -360.0f, 360.0f, "%.0f");
+        undo_field();
         moved |= ImGui::IsItemDeactivatedAfterEdit();
+        held |= ImGui::IsItemActive();
+        e.held = held;
         same_line_if_room(button_width(tr(lang, S::map_to_ground)));
         if (ImGui::SmallButton(tr(lang, S::map_to_ground))) {
             double y = 0;
             if (ground_under(p.built, at[0] * 4096.0, at[2] * 4096.0, at[1] * 4096.0 + 4096.0, &y) ||
                 ground_under(p.built, at[0] * 4096.0, at[2] * 4096.0, 1e18, &y)) {
+                edit_push();
                 at[1] = static_cast<float>(y / 4096.0 + 0.1);  // as the game's sit, a tenth above
                 moved = true;
+                e.held = false;
             }
         }
         if (moved) {
@@ -966,6 +1608,7 @@ void draw_lists(App& app) {
                                   static_cast<int>(k) == m.picked_marker)) {
                 m.picked_marker = static_cast<int>(k);
                 m.picked_face = m.picked_list = -1;
+                m.picked_gate = false;
             }
         }
     }
@@ -977,6 +1620,8 @@ void draw_lists(App& app) {
         }
     }
 }
+
+void draw_gate_models(App& app);  // below
 
 // The names (the original's exits and walls that open, the materials' names) and the exits' models.
 void draw_names_and_exits(App& app) {
@@ -1043,8 +1688,13 @@ void draw_names_and_exits(App& app) {
         }
         ImGui::TreePop();
     }
+    draw_gate_models(app);
+}
 
-    // the exits' models of this room: where they stand
+// The exits' models of this room: where they stand, moved with the change.
+void draw_gate_models(App& app) {
+    const auto lang = app.language;
+    Replacing& p = m.rep;
     if (ImGui::TreeNode(tr(lang, S::map_gate_models))) {
         for (const auto& link : m.room->links) {
             for (const auto& g : m.world.gate_models) {
@@ -1059,11 +1709,13 @@ void draw_names_and_exits(App& app) {
                     float v[3] = {static_cast<float>(at[0]) * kFx, static_cast<float>(at[1]) * kFx,
                                   static_cast<float>(at[2]) * kFx};
                     ImGui::SetNextItemWidth(20 * ImGui::GetFontSize());
-                    if (ImGui::DragFloat3(
-                            fmt(lang, S::map_gate_part,
-                                {std::to_string(g.key), std::to_string(part), std::to_string(g.parts[part].member)})
-                                .c_str(),
-                            v, 0.02f, -100000.0f, 100000.0f, "%.2f")) {
+                    const bool dragged = ImGui::DragFloat3(
+                        fmt(lang, S::map_gate_part,
+                            {std::to_string(g.key), std::to_string(part), std::to_string(g.parts[part].member)})
+                            .c_str(),
+                        v, 0.02f, -100000.0f, 100000.0f, "%.2f");
+                    undo_field();
+                    if (dragged) {
                         p.r.gate_points[id] = {static_cast<std::int32_t>(std::lround(v[0] * 4096.0)),
                                                static_cast<std::int32_t>(std::lround(v[1] * 4096.0)),
                                                static_cast<std::int32_t>(std::lround(v[2] * 4096.0))};
@@ -1440,51 +2092,12 @@ void draw_shown_room(App& app) {
     }
 }
 
-void draw_replace(App& app, const Item& item) {
+// Steps 2 and 3 of replacing a room by a model, and its advanced settings; whether a setting was let go of.
+bool draw_model_steps(App& app, const Item& item) {
     const auto lang = app.language;
     Replacing& p = m.rep;
     const ImVec4 warn(0.95f, 0.8f, 0.35f, 1), good(0.55f, 0.9f, 0.55f, 1);
-    if (m.open_replace) {
-        ImGui::SetNextItemOpen(true);
-        m.open_replace = false;
-    }
-    if (!ImGui::CollapsingHeader(tr(lang, S::map_replace), p.active ? ImGuiTreeNodeFlags_DefaultOpen : 0))
-        return;
-    const Mod* mod = app.current_mod();
-
-    // 1. the model: the person's, or the game's room exported to start from
-    ImGui::SeparatorText(tr(lang, S::map_step_model));
-    ImGui::TextWrapped("%s", tr(lang, S::map_replace_hint));
-    kh2_take(app, item);
-    if (ImGui::Button(tr(lang, S::choose_file))) {
-        p.next_is_collision = false;
-        p.r.kh2.clear();  // the modder's own model, not a KH2 room
-        choose_file(app, item);
-    }
-    same_line_if_room(button_width(tr(lang, S::map_export)));
-    if (ImGui::Button(tr(lang, S::map_export)))
-        choose_room_export(app, item);
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", tr(lang, S::map_export_hint));
-    same_line_if_room(button_width(tr(lang, S::map_kh2_source)));
-    if (ImGui::Button(tr(lang, S::map_kh2_source)))
-        kh2.shown = !kh2.shown;
-    if (kh2.shown)
-        draw_kh2_picker(app);
-    if (mod == nullptr) {
-        ImGui::TextColored(warn, "%s", tr(lang, S::choose_mod_first));
-        return;
-    }
-    if (!p.active)
-        return;
-    if (!p.r.kh2.empty())
-        ImGui::TextColored(warn, "%s %s", p.r.kh2.c_str(), tr(lang, S::map_kh2_note));
-    ImGui::TextUnformatted(
-        fmt(lang, S::map_model_file, {p.model_source.empty() ? std::string("-") : u8(p.model_source.filename())})
-            .c_str());
-
+    bool changed = false;
     // 2. where it sits: lined up by the tool when it can, the person's hand otherwise
     ImGui::SeparatorText(tr(lang, S::map_step_place));
     if (!p.placed_text.empty()) {
@@ -1498,7 +2111,6 @@ void draw_replace(App& app, const Item& item) {
     same_line_if_room(button_width(tr(lang, S::map_raise_to_markers)));
     if (ImGui::Button(tr(lang, S::map_raise_to_markers)) && p.built_ok)
         raise_to_room_markers(app);
-    bool changed = false;
     ImGui::SetNextItemWidth(8 * ImGui::GetFontSize());
     ImGui::DragFloat(tr(lang, S::map_scale), &p.r.place.scale, 0.01f, 0.001f, 1000.0f, "%.3f");
     changed |= ImGui::IsItemDeactivatedAfterEdit();
@@ -1585,8 +2197,811 @@ void draw_replace(App& app, const Item& item) {
         draw_names_and_exits(app);
         ImGui::TreePop();
     }
-    if (changed)
+    return changed;
+}
+
+// A change of the room that keeps the game's look and floor (markers, exits' models and hand edits only).
+void start_kept_change() {
+    Replacing& p = m.rep;
+    p = Replacing{};
+    p.active = true;
+    p.r.world = m.world.code;
+    p.r.room = m.room->index;
+    p.r.keep_collision = true;
+    p.dirty = true;
+}
+
+// --- The collision editor ---------------------------------------------------------------------------------
+
+// The shapes in the order the lists and buttons show them.
+constexpr std::pair<S, CollisionShape::Kind> kShapeKinds[4] = {{S::map_shape_plane, CollisionShape::plane},
+                                                               {S::map_shape_ramp, CollisionShape::ramp},
+                                                               {S::map_shape_box, CollisionShape::box},
+                                                               {S::map_shape_wedge, CollisionShape::wedge}};
+
+// The collision editor on or off (the panel's header and the bar's button): on, picking in the picture is on,
+// the floors and walls shown, and a room with no change yet starts one keeping the game's room.
+void set_editing(bool on) {
+    m.editing = on;
+    if (!on) {
+        m.gizmo_drag = -1;
+        m.box_on = false;
+        return;
+    }
+    m.show_ground = m.show_walls = true;
+    if (!m.rep.active && m.room != nullptr && m.has_collision)
+        start_kept_change();
+    if (m.rep.view == 1)
+        m.rep.view = 0;
+}
+
+Replacing::UndoStep undo_state() {
+    return {m.rep.r.edits, m.rep.r.markers, m.rep.r.gate_points};
+}
+
+// Before each change of the hand edits, a marker or an exit's model: all of them as they were, for undo.
+void edit_push() {
+    Replacing& p = m.rep;
+    p.undo.push_back(undo_state());
+    if (p.undo.size() > 200)
+        p.undo.pop_front();
+    p.parked_redo = std::move(p.redo);
+    p.redo.clear();
+}
+
+// The step edit_push just kept taken back (a drag cancelled, or a field let go of unchanged), Redo as it was.
+void edit_unpush() {
+    Replacing& p = m.rep;
+    if (p.undo.empty())
+        return;
+    p.undo.pop_back();
+    p.redo = std::move(p.parked_redo);
+    p.parked_redo.clear();
+}
+
+// After a field that changes the room's change: its state kept for undo when taken hold of, and given back
+// when let go of with nothing changed (a click into a field leaves no step to undo).
+void undo_field() {
+    if (ImGui::IsItemActivated())
+        edit_push();
+    else if (ImGui::IsItemDeactivated() && !ImGui::IsItemDeactivatedAfterEdit())
+        edit_unpush();
+}
+
+void edits_changed() {
+    m.rep.edits_dirty = true;
+    m.rep.message.clear();
+    m.shape_names_for = -1;  // the picked shape's names field filled again (shapes may have moved or changed)
+}
+
+void edit_undo(bool redo) {
+    Replacing& p = m.rep;
+    auto& from = redo ? p.redo : p.undo;
+    auto& to = redo ? p.undo : p.redo;
+    if (from.empty())
+        return;
+    to.push_back(undo_state());
+    const bool markers_moved = from.back().markers != p.r.markers;
+    p.r.edits = std::move(from.back().edits);
+    p.r.markers = std::move(from.back().markers);
+    p.r.gate_points = std::move(from.back().gate_points);
+    from.pop_back();
+    if (m.picked_shape >= static_cast<int>(p.r.edits.shapes.size()))
+        m.picked_shape = -1;
+    m.marker_edit.held = false;  // the picked marker's fields show where it is now
+    edits_changed();
+    if (markers_moved)
+        p.dirty = true;  // a model's collision holds its markers: made again
+}
+
+// The shape picked in the picture or the list, or null.
+CollisionShape* picked_shape() {
+    auto& shapes = m.rep.r.edits.shapes;
+    if (m.picked_shape < 0 || m.picked_shape >= static_cast<int>(shapes.size()))
+        return nullptr;
+    return &shapes[static_cast<std::size_t>(m.picked_shape)];
+}
+
+// The picked shape lowered or raised onto the floor under it (its own faces left out).
+void drop_picked_shape(App& app) {
+    CollisionShape* picked = picked_shape();
+    if (!showing_built() || picked == nullptr)
+        return;
+    const int index = m.picked_shape;
+    CollisionShape s = *picked;
+    if (!drop_to_ground(shown(), &s, [&](int l, std::size_t j) { return shape_of_shown(l, j) == index; })) {
+        app.tell(tr(app.language, S::map_drop_none), false);
+        return;
+    }
+    edit_push();
+    *picked = std::move(s);
+    edits_changed();
+}
+
+// The picked shape turned a quarter about the up axis, copied beside itself (the copy picked), or deleted.
+void turn_picked_shape() {
+    CollisionShape* s = picked_shape();
+    if (s == nullptr)
+        return;
+    edit_push();
+    s->turn[1] = std::fmod(s->turn[1] + 90.0f, 360.0f);
+    edits_changed();
+}
+
+void copy_picked_shape() {
+    CollisionShape* s = picked_shape();
+    if (s == nullptr)
+        return;
+    edit_push();
+    CollisionShape copy = *s;
+    copy.at[0] += 1.0f;
+    auto& shapes = m.rep.r.edits.shapes;
+    shapes.push_back(std::move(copy));
+    m.picked_shape = static_cast<int>(shapes.size()) - 1;
+    edits_changed();
+}
+
+void delete_picked_shape() {
+    if (picked_shape() == nullptr)
+        return;
+    edit_push();
+    auto& shapes = m.rep.r.edits.shapes;
+    shapes.erase(shapes.begin() + m.picked_shape);
+    m.picked_shape = -1;
+    edits_changed();
+}
+
+// The names a face gives (its gate, wall that opens, surface tags), as shown.
+std::vector<std::string> face_names(int list, const RoomFace& f) {
+    std::vector<std::string> out;
+    for (std::size_t s = 0; s < 4; ++s) {
+        if (f.slots[s] != 0xff && slot_names(list, s) && f.slots[s] < shown().named.size())
+            out.push_back(shown().named[f.slots[s]].text());
+    }
+    return out;
+}
+
+const RoomFace* shown_face(const FaceKey& k) {
+    if (k.list < 0 || k.list > 2)
+        return nullptr;
+    for (const auto& f : shown().faces[static_cast<std::size_t>(k.list)]) {
+        if (face_key(k.list, f) == k)
+            return &f;
+    }
+    return nullptr;
+}
+
+// The selected faces given another kind, removed, or named.
+void selected_to_kind(int to) {
+    edit_push();
+    std::set<FaceKey> now;
+    for (const auto& k : m.selected) {
+        const FaceKey b = base_key(k);
+        FaceEdit& fe = m.rep.r.edits.faces[b];
+        fe.list = to == b.list ? -1 : to;
+        if (!fe.removed && fe.list < 0 && !fe.renamed)
+            m.rep.r.edits.faces.erase(b);
+        FaceKey shown_key = k;
+        shown_key.list = to;
+        now.insert(shown_key);
+    }
+    m.selected = std::move(now);
+    edits_changed();
+}
+
+void remove_selected() {
+    if (m.selected.empty())
+        return;
+    edit_push();
+    for (const auto& k : m.selected)
+        m.rep.r.edits.faces[base_key(k)].removed = true;
+    m.selected.clear();
+    edits_changed();
+}
+
+// Names typed apart by commas or spaces, and written back that way.
+std::vector<std::string> names_from_text(const std::string& text) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (const char ch : text + ",") {
+        if (ch == ',' || ch == ' ') {
+            if (!cur.empty())
+                out.push_back(cur);
+            cur.clear();
+        } else {
+            cur += ch;
+        }
+    }
+    return out;
+}
+
+std::string names_line(const std::vector<std::string>& names) {
+    std::string out;
+    for (const auto& n : names)
+        out += (out.empty() ? "" : ", ") + n;
+    return out;
+}
+
+// The names field of the selected faces: filled from the first of them whenever it changes.
+void sync_names_text() {
+    if (m.selected.empty())
+        return;
+    const FaceKey& first = *m.selected.begin();
+    if (m.names_for == first)
+        return;
+    m.names_for = first;
+    const RoomFace* f = shown_face(first);
+    m.names_text = f != nullptr ? names_line(face_names(first.list, *f)) : std::string();
+}
+
+void apply_names_to_selected() {
+    edit_push();
+    const auto names = names_from_text(m.names_text);
+    for (const auto& k : m.selected) {
+        FaceEdit& fe = m.rep.r.edits.faces[base_key(k)];
+        fe.renamed = true;
+        fe.names = names;
+    }
+    edits_changed();
+}
+
+// The selected faces' corners and their normals summed (as shown), for a shape fitted over them.
+void selection_points(std::vector<std::array<float, 3>>* points, std::array<float, 3>* normal) {
+    *normal = {0, 0, 0};
+    for (const auto& k : m.selected) {
+        const RoomFace* f = shown_face(k);
+        if (f == nullptr || f->corners < 3)
+            continue;
+        for (std::size_t v = 0; v < f->corners; ++v)
+            points->push_back(corner(*f, v));
+        const auto a = corner(*f, 0), b = corner(*f, 1), c = corner(*f, 2);
+        const std::array<float, 3> e0{b[0] - a[0], b[1] - a[1], b[2] - a[2]}, e1{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+        std::array<float, 3> n{e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
+                               e0[0] * e1[1] - e0[1] * e1[0]};
+        const float l = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (l > 0)
+            for (std::size_t q = 0; q < 3; ++q)
+                (*normal)[q] += n[q] / l;
+    }
+}
+
+// A new shape: fitted over the selected faces (a plane lying on them, a ramp or wedge rising the way they
+// rise), else at the middle of the view.
+void add_shape(CollisionShape::Kind kind) {
+    edit_push();
+    std::vector<std::array<float, 3>> points;
+    std::array<float, 3> normal{};
+    selection_points(&points, &normal);
+    m.rep.r.edits.shapes.push_back(fit_shape(kind, points, normal, m.target));
+    m.picked_shape = static_cast<int>(m.rep.r.edits.shapes.size()) - 1;
+    edits_changed();
+}
+
+// The selected faces made one shape: fitted over them, given their kind (a plane's or ramp's, when all are one)
+// and names (when all share them), and the faces removed -- one step to undo.
+void convert_selection(CollisionShape::Kind kind) {
+    if (m.selected.empty())
+        return;
+    std::vector<std::array<float, 3>> points;
+    std::array<float, 3> normal{};
+    selection_points(&points, &normal);
+    if (points.empty())
+        return;
+    edit_push();
+    CollisionShape s = fit_shape(kind, points, normal, m.target);
+    bool one_list = true, one_names = true, first = true;
+    int list = -1;
+    std::vector<std::string> names;
+    for (const auto& k : m.selected) {
+        const RoomFace* f = shown_face(k);
+        if (f == nullptr)
+            continue;
+        auto these = face_names(k.list, *f);
+        if (first) {
+            list = k.list, names = std::move(these), first = false;
+        } else {
+            one_list = one_list && k.list == list;
+            one_names = one_names && these == names;
+        }
+    }
+    if (one_list && (kind == CollisionShape::plane || kind == CollisionShape::ramp))
+        s.list = list;  // walls stay walls, a steep ground stays a ground
+    if (one_names)
+        s.names = std::move(names);
+    for (const auto& k : m.selected)
+        m.rep.r.edits.faces[base_key(k)].removed = true;
+    m.selected.clear();
+    m.rep.r.edits.shapes.push_back(std::move(s));
+    m.picked_shape = static_cast<int>(m.rep.r.edits.shapes.size()) - 1;
+    edits_changed();
+}
+
+// --- The picked shape's fields, in the panel (labelled, one a row) or in the bar under the picture (across) ---
+
+void shape_kind_combo(App& app, CollisionShape& s, bool bar) {
+    const auto lang = app.language;
+    const char* kinds[4];
+    for (std::size_t i = 0; i < 4; ++i)
+        kinds[i] = tr(lang, kShapeKinds[i].first);
+    int kind = static_cast<int>(s.kind);
+    ImGui::SetNextItemWidth((bar ? 6 : 10) * ImGui::GetFontSize());
+    if (ImGui::Combo(bar ? "##shape" : tr(lang, S::map_shape_kind), &kind, kinds, 4) &&
+        kind != static_cast<int>(s.kind)) {
+        edit_push();
+        s.kind = static_cast<CollisionShape::Kind>(kind);
+        edits_changed();
+    }
+}
+
+// what its faces are: each by its slope, or all one kind
+void shape_list_combo(App& app, CollisionShape& s, bool bar) {
+    const auto lang = app.language;
+    const char* lists[4] = {tr(lang, S::map_shape_by_slope), tr(lang, S::map_grounds), tr(lang, S::map_walls),
+                            tr(lang, S::map_ceilings)};
+    int list = s.list + 1;
+    ImGui::SetNextItemWidth((bar ? 8 : 10) * ImGui::GetFontSize());
+    if (ImGui::Combo(bar ? "##list" : tr(lang, S::map_shape_list), &list, lists, 4) && list - 1 != s.list) {
+        edit_push();
+        s.list = list - 1;
+        edits_changed();
+    }
+}
+
+// Its place, turn and size: dragged or typed, the outline follows at once and the faces are made again when
+// let go.
+void shape_fields(App& app, CollisionShape& s, bool bar) {
+    const auto lang = app.language;
+    const float w = ImGui::GetFontSize();
+    auto field = [&](S panel_label, S bar_label, std::array<float, 3>& v, float speed, const char* format) {
+        if (bar) {
+            same_line_if_room(16 * w);
+            ImGui::TextUnformatted(tr(lang, bar_label));
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(12 * w);
+            ImGui::PushID(static_cast<int>(bar_label));
+            ImGui::DragFloat3("##v", v.data(), speed, -100000.0f, 100000.0f, format);
+            ImGui::PopID();
+        } else {
+            ImGui::SetNextItemWidth(20 * w);
+            ImGui::DragFloat3(tr(lang, panel_label), v.data(), speed, -100000.0f, 100000.0f, format);
+        }
+        undo_field();
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            edits_changed();
+    };
+    field(S::map_shape_at, S::map_tb_place, s.at, 0.02f, "%.2f");
+    field(S::map_shape_turn, S::map_tb_turn, s.turn, 0.5f, "%.1f");
+    field(S::map_shape_size, S::map_tb_size, s.size, 0.02f, "%.2f");
+    for (auto& c : s.size)
+        c = std::max(c, 0.01f);
+}
+
+// stood on from both sides: a plane's or a ramp's
+void shape_both_check(App& app, CollisionShape& s, bool bar) {
+    if (s.kind != CollisionShape::plane && s.kind != CollisionShape::ramp)
+        return;
+    const char* label = tr(app.language, S::map_shape_both);
+    if (bar)
+        same_line_if_room(check_width(label));
+    bool both = s.both_sides;
+    if (ImGui::Checkbox(label, &both)) {
+        edit_push();
+        s.both_sides = both;
+        edits_changed();
+    }
+}
+
+// Turn 90, (Drop, in the bar,) Copy and Delete. Drawn last: Copy and Delete change the list the shape is in.
+void shape_buttons(App& app, bool bar) {
+    const auto lang = app.language;
+    auto button = [&](S label, bool first) {
+        if (bar)
+            same_line_if_room(button_width(tr(lang, label)));
+        else if (!first)
+            ImGui::SameLine();
+        return ImGui::Button(tr(lang, label));
+    };
+    if (button(S::map_shape_turn90, true))
+        turn_picked_shape();
+    if (bar && button(S::map_drop, false))
+        drop_picked_shape(app);
+    const bool copy = button(S::map_shape_copy, false);
+    const bool remove = button(S::map_shape_delete, false);
+    if (copy)
+        copy_picked_shape();
+    else if (remove)
+        delete_picked_shape();
+}
+
+void draw_shape_fields(App& app) {
+    const auto lang = app.language;
+    CollisionShape* picked = picked_shape();
+    if (picked == nullptr)
+        return;
+    CollisionShape& s = *picked;
+    ImGui::PushID("shape");
+    // the handles in the picture: which ones (also 1, 2, 3 over the picture)
+    ImGui::RadioButton(tr(lang, S::map_gizmo_move), &m.gizmo_mode, 0);
+    ImGui::SameLine();
+    ImGui::RadioButton(tr(lang, S::map_gizmo_size), &m.gizmo_mode, 1);
+    ImGui::SameLine();
+    ImGui::RadioButton(tr(lang, S::map_gizmo_turn), &m.gizmo_mode, 2);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tr(lang, S::map_gizmo_hint));
+    shape_kind_combo(app, s, false);
+    shape_fields(app, s, false);
+    shape_list_combo(app, s, false);
+    shape_both_check(app, s, false);
+    if (m.shape_names_for != m.picked_shape) {
+        m.shape_names_for = m.picked_shape;
+        m.shape_names_text = names_line(s.names);
+    }
+    ImGui::SetNextItemWidth(14 * ImGui::GetFontSize());
+    ImGui::InputText(tr(lang, S::map_edit_names), &m.shape_names_text);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        edit_push();
+        s.names = names_from_text(m.shape_names_text);
+        edits_changed();
+    }
+    shape_buttons(app, false);
+    ImGui::PopID();
+}
+
+// What to do with the selected faces: delete them, give them another kind, select none, or convert them to a
+// shape.
+void draw_selection_actions(App& app) {
+    const auto lang = app.language;
+    if (ImGui::Button(tr(lang, S::map_edit_delete)))
+        remove_selected();
+    const S kinds[3] = {S::map_edit_make_ground, S::map_edit_make_wall, S::map_edit_make_ceiling};
+    for (int l = 0; l < 3; ++l) {
+        same_line_if_room(button_width(tr(lang, kinds[l])));
+        if (ImGui::Button(tr(lang, kinds[l])))
+            selected_to_kind(l);
+    }
+    same_line_if_room(button_width(tr(lang, S::map_edit_select_none)));
+    if (ImGui::Button(tr(lang, S::map_edit_select_none)))
+        m.selected.clear();
+    draw_convert_buttons(app);
+}
+
+// "Add:" and a button per shape.
+void draw_add_buttons(App& app) {
+    ImGui::TextUnformatted(tr(app.language, S::map_edit_add));
+    for (const auto& [label, kind] : kShapeKinds) {
+        ImGui::SameLine();
+        if (ImGui::Button(tr(app.language, label)))
+            add_shape(kind);
+    }
+}
+
+void draw_collision_editor(App& app) {
+    const auto lang = app.language;
+    Replacing& p = m.rep;
+    const ImVec4 warn(0.95f, 0.8f, 0.35f, 1);
+    // open while editing: the same switch as the bar's "Edit collision" (picking in the picture on with it)
+    ImGui::SetNextItemOpen(m.editing, ImGuiCond_Always);
+    const bool open = ImGui::CollapsingHeader(tr(lang, S::map_tb_edit));
+    if (open != m.editing)
+        set_editing(open);
+    if (!open)
+        return;
+    if (app.current_mod() == nullptr) {
+        ImGui::TextColored(warn, "%s", tr(lang, S::choose_mod_first));
+        return;
+    }
+    if (!m.has_collision) {
+        ImGui::TextDisabled("%s", tr(lang, S::map_no_collision));
+        return;
+    }
+    if (!p.active)
+        return;  // started by set_editing
+    if (p.view == 1)
+        p.view = 0;  // the edits are on yours
+    ImGui::TextDisabled("%s", tr(lang, S::map_edit_help));
+    // the keys, while no field is typed in or held and no handle is dragged (each keeps its own undo step)
+    if (!ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive() && m.gizmo_drag < 0) {
+        if (ImGui::IsKeyPressed(ImGuiKey_End, false))
+            drop_picked_shape(app);
+        else if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && !m.selected.empty())
+            remove_selected();
+        else if (ImGui::IsKeyPressed(ImGuiKey_Delete, false))
+            delete_picked_shape();
+    }
+    if (!p.edit_error.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.4f, 0.4f, 1));
+        ImGui::TextWrapped("%s", fmt(lang, S::map_edit_error, {p.edit_error}).c_str());
+        ImGui::PopStyleColor();
+    }
+
+    // the selected faces
+    ImGui::SeparatorText(fmt(lang, S::map_edit_selected, {std::to_string(m.selected.size())}).c_str());
+    if (!m.selected.empty())
+        draw_selection_actions(app);
+    if (!m.selected.empty()) {
+        // names: those of the first selected face to start from (still selected after the actions above)
+        sync_names_text();
+        ImGui::SetNextItemWidth(14 * ImGui::GetFontSize());
+        ImGui::InputText(tr(lang, S::map_edit_names), &m.names_text);
+        same_line_if_room(button_width(tr(lang, S::map_edit_apply_names)));
+        if (ImGui::Button(tr(lang, S::map_edit_apply_names)))
+            apply_names_to_selected();
+    }
+    // what the hand edits do to the room's own faces
+    if (!p.r.edits.faces.empty()) {
+        std::size_t removed = 0, kinds = 0, renamed = 0;
+        for (const auto& [key, fe] : p.r.edits.faces) {
+            removed += fe.removed ? 1 : 0;
+            kinds += !fe.removed && fe.list >= 0 && fe.list != key.list ? 1 : 0;
+            renamed += !fe.removed && fe.renamed ? 1 : 0;
+        }
+        ImGui::TextUnformatted(
+            fmt(lang, S::map_edit_counts, {std::to_string(removed), std::to_string(kinds), std::to_string(renamed)})
+                .c_str());
+        same_line_if_room(button_width(tr(lang, S::map_edit_bring_back)));
+        if (ImGui::SmallButton(tr(lang, S::map_edit_bring_back))) {
+            edit_push();
+            p.r.edits.faces.clear();
+            edits_changed();
+        }
+    }
+    if (p.applied.unmatched > 0)
+        ImGui::TextColored(warn, "%s", fmt(lang, S::map_edit_unmatched, {std::to_string(p.applied.unmatched)}).c_str());
+
+    // the shapes
+    ImGui::SeparatorText(fmt(lang, S::map_edit_shapes, {std::to_string(p.r.edits.shapes.size())}).c_str());
+    draw_add_buttons(app);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tr(lang, S::map_edit_add_hint));
+    for (std::size_t s = 0; s < p.r.edits.shapes.size(); ++s) {
+        const auto& sh = p.r.edits.shapes[s];
+        char at[3][16];
+        for (std::size_t c = 0; c < 3; ++c)
+            std::snprintf(at[c], sizeof(at[c]), "%.2f", static_cast<double>(sh.at[c]));
+        const std::string row =
+            fmt(lang, S::map_shape_row,
+                {std::to_string(s + 1), tr(lang, kShapeKinds[static_cast<std::size_t>(sh.kind)].first), at[0], at[1],
+                 at[2]}) +
+            "##shape" + std::to_string(s);
+        if (ImGui::Selectable(row.c_str(), static_cast<int>(s) == m.picked_shape))
+            m.picked_shape = static_cast<int>(s);
+    }
+    draw_shape_fields(app);
+}
+
+// --- The bars over and under the picture: the collision editor's tools laid out across ---------------------
+
+// "Convert to:" and a button per shape: the selected faces made that shape (convert_selection).
+void draw_convert_buttons(App& app) {
+    const auto lang = app.language;
+    ImGui::PushID("convert");
+    same_line_if_room(ImGui::CalcTextSize(tr(lang, S::map_convert)).x + 4 * button_width(tr(lang, S::map_shape_wedge)));
+    ImGui::TextUnformatted(tr(lang, S::map_convert));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tr(lang, S::map_convert_hint));
+    for (const auto& [label, kind] : kShapeKinds) {
+        ImGui::SameLine();
+        if (ImGui::Button(tr(lang, label)))
+            convert_selection(kind);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", tr(lang, S::map_convert_hint));
+    }
+    ImGui::PopID();
+}
+
+// A button shown pressed while `on`.
+bool toggle_button(const char* label, bool on) {
+    if (on) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
+    }
+    const bool clicked = ImGui::Button(label);
+    if (on)
+        ImGui::PopStyleColor(3);
+    return clicked;
+}
+
+// a gap between groups of tools: a faint bar
+void bar_gap() {
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+}
+
+// Over the picture: start editing, pick on/off, the handles' mode, shapes to add, undo, the selection's actions.
+void draw_map_tools(App& app) {
+    const auto lang = app.language;
+    Replacing& p = m.rep;
+    if (app.current_mod() == nullptr || !m.has_collision)
+        return;
+    ImGui::PushID("map_toolbar");
+    // undo and redo first, over the picture's left corner
+    if (p.active) {
+        ImGui::BeginDisabled(p.undo.empty());
+        if (ImGui::Button(tr(lang, S::map_edit_undo)))
+            edit_undo(false);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(p.redo.empty());
+        if (ImGui::Button(tr(lang, S::map_edit_redo)))
+            edit_undo(true);
+        ImGui::EndDisabled();
+        bar_gap();
+    }
+    if (toggle_button(tr(lang, S::map_tb_edit), m.editing))
+        set_editing(!m.editing);
+    if (m.editing) {
+        bar_gap();
+        ImGui::TextUnformatted(tr(lang, S::map_tb_mode));
+        const S modes[3] = {S::map_gizmo_move, S::map_gizmo_size, S::map_gizmo_turn};
+        for (int i = 0; i < 3; ++i) {
+            ImGui::SameLine();
+            if (toggle_button(tr(lang, modes[i]), m.gizmo_mode == i))
+                m.gizmo_mode = i;
+        }
+        bar_gap();
+        ImGui::Checkbox(tr(lang, S::map_snap_surface), &m.snap_surface);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", tr(lang, S::map_snap_surface_hint));
+        ImGui::SameLine();
+        ImGui::BeginDisabled(picked_shape() == nullptr);
+        if (ImGui::Button(tr(lang, S::map_drop)))
+            drop_picked_shape(app);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s", tr(lang, S::map_drop_hint));
+        bar_gap();
+        draw_add_buttons(app);
+        if (!m.selected.empty()) {
+            bar_gap();
+            draw_selection_actions(app);
+        }
+    }
+    ImGui::PopID();
+}
+
+// The bar over the picture: the collision editor's tools, then (at its right end) the camera: orbiting the
+// point in front of it, or looking around from where it stands (kept in the settings).
+void draw_map_toolbar(App& app) {
+    const auto lang = app.language;
+    draw_map_tools(app);
+    const char* label = tr(lang, S::map_camera);
+    const float width = ImGui::CalcTextSize(label).x + button_width(tr(lang, S::map_camera_orbit)) +
+                        button_width(tr(lang, S::map_camera_fps)) + 2 * ImGui::GetStyle().ItemSpacing.x;
+    // at the right end of the tools' last row (of the view's checkboxes when there are no tools) when it has
+    // room, else a row of its own
+    const float right = ImGui::GetWindowContentRegionMax().x;
+    ImGui::SameLine();
+    if (ImGui::GetCursorPosX() + width > right)
+        ImGui::NewLine();
+    else
+        ImGui::SetCursorPosX(right - width);
+    ImGui::PushID("camera");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tr(lang, S::map_camera_hint));
+    bool fps = app.settings.map_camera_fps;
+    ImGui::SameLine();
+    if (toggle_button(tr(lang, S::map_camera_orbit), !fps))
+        fps = false;
+    ImGui::SameLine();
+    if (toggle_button(tr(lang, S::map_camera_fps), app.settings.map_camera_fps))
+        fps = true;
+    if (fps != app.settings.map_camera_fps) {
+        app.settings.map_camera_fps = fps;
+        std::string why;
+        if (!save_settings(app.settings, &why))
+            app.tell(fmt(lang, S::save_failed, {why}), false);
+    }
+    ImGui::PopID();
+}
+
+// Under the picture: the picked shape's fields across, or the selected faces' names, or what to do.
+void draw_map_bottom_bar(App& app) {
+    const auto lang = app.language;
+    Replacing& p = m.rep;
+    ImGui::PushID("map_bottom_bar");
+    CollisionShape* picked = m.editing && p.active ? picked_shape() : nullptr;
+    if (picked != nullptr) {
+        CollisionShape& s = *picked;
+        ImGui::Text("%d.", m.picked_shape + 1);
+        ImGui::SameLine();
+        shape_kind_combo(app, s, true);
+        ImGui::SameLine();
+        shape_list_combo(app, s, true);
+        shape_fields(app, s, true);
+        shape_both_check(app, s, true);
+        shape_buttons(app, true);
+    } else if (m.editing && p.active && !m.selected.empty()) {
+        sync_names_text();
+        ImGui::TextUnformatted(fmt(lang, S::map_edit_selected, {std::to_string(m.selected.size())}).c_str());
+        ImGui::SameLine();
+        ImGui::TextUnformatted(tr(lang, S::map_edit_names));
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(14 * ImGui::GetFontSize());
+        ImGui::InputText("##names", &m.names_text);
+        ImGui::SameLine();
+        if (ImGui::Button(tr(lang, S::map_edit_apply_names)))
+            apply_names_to_selected();
+    } else if (m.editing && p.active) {
+        ImGui::TextDisabled("%s", tr(lang, S::map_tb_nothing));
+    }
+    if (!p.edit_error.empty())
+        ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1), "%s", fmt(lang, S::map_edit_error, {p.edit_error}).c_str());
+    ImGui::TextDisabled("%s", tr(lang, S::map_controls));
+    ImGui::PopID();
+}
+
+void draw_replace(App& app, const Item& item) {
+    const auto lang = app.language;
+    Replacing& p = m.rep;
+    const ImVec4 warn(0.95f, 0.8f, 0.35f, 1), good(0.55f, 0.9f, 0.55f, 1);
+    if (m.open_replace) {
+        ImGui::SetNextItemOpen(true);
+        m.open_replace = false;
+    }
+    if (!ImGui::CollapsingHeader(tr(lang, S::map_replace), p.active ? ImGuiTreeNodeFlags_DefaultOpen : 0))
+        return;
+    const Mod* mod = app.current_mod();
+
+    // 1. the model: the person's, or the game's room exported to start from
+    ImGui::SeparatorText(tr(lang, S::map_step_model));
+    ImGui::TextWrapped("%s", tr(lang, S::map_replace_hint));
+    kh2_take(app, item);
+    if (ImGui::Button(tr(lang, S::choose_file))) {
+        p.next_is_collision = false;
+        p.r.kh2.clear();  // the modder's own model, not a KH2 room
+        choose_file(app, item);
+    }
+    same_line_if_room(button_width(tr(lang, S::map_export)));
+    if (ImGui::Button(tr(lang, S::map_export)))
+        choose_room_export(app, item);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tr(lang, S::map_export_hint));
+    same_line_if_room(button_width(tr(lang, S::map_kh2_source)));
+    if (ImGui::Button(tr(lang, S::map_kh2_source)))
+        kh2.shown = !kh2.shown;
+    if (kh2.shown)
+        draw_kh2_picker(app);
+    if (mod == nullptr) {
+        ImGui::TextColored(warn, "%s", tr(lang, S::choose_mod_first));
+        return;
+    }
+    if (!p.active) {
+        // or no model at all: the game's room kept, only its markers and exits' models moved
+        if (ImGui::Button(tr(lang, S::map_markers_only)) && m.room != nullptr && m.has_collision) {
+            start_kept_change();
+            m.show_markers = true;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", tr(lang, S::map_markers_only_hint));
+        return;
+    }
+    if (!p.r.kh2.empty())
+        ImGui::TextColored(warn, "%s %s", p.r.kh2.c_str(), tr(lang, S::map_kh2_note));
+    ImGui::TextUnformatted(
+        fmt(lang, S::map_model_file, {p.model_source.empty() ? std::string("-") : u8(p.model_source.filename())})
+            .c_str());
+
+    if (markers_only(p.r)) {
+        // the game's room as it looks and plays: its markers moved by picking one, its exits' models below
+        ImGui::PushStyleColor(ImGuiCol_Text, good);
+        ImGui::TextWrapped("%s", tr(lang, S::map_markers_only_note));
+        ImGui::PopStyleColor();
+        draw_gate_models(app);
+    } else if (draw_model_steps(app, item)) {
         p.dirty = true;
+    }
     if (p.dirty)
         rebuild();
 
@@ -1596,7 +3011,7 @@ void draw_replace(App& app, const Item& item) {
                                        std::to_string(p.report.faces[kCeiling]), std::to_string(p.report.nodes),
                                        std::to_string(p.report.bytes)})
                                       .c_str());
-    } else if (p.built_ok) {
+    } else if (p.built_ok && !markers_only(p.r)) {
         ImGui::TextDisabled("%s", tr(lang, S::map_collision_kept_note));
     }
     for (const auto& w : p.warnings) {
@@ -1625,7 +3040,7 @@ void draw_replace(App& app, const Item& item) {
     // 4. saved into the mod (or the room given back to the game)
     ImGui::SeparatorText(tr(lang, S::map_step_save));
     const fs::path dump = resolve(app.settings, app.settings.graphics_dump);
-    ImGui::BeginDisabled(!p.built_ok);
+    ImGui::BeginDisabled(!p.built_ok || !p.edit_error.empty());
     if (ImGui::Button(tr(lang, S::map_save))) {
         WorldOutcome o;
         std::string why;
@@ -1634,7 +3049,8 @@ void draw_replace(App& app, const Item& item) {
         if (save_change(nitrofs(), dump, mod->dir, p.r, p.model_source, p.collision_source, &o, &why)) {
             // from now on, the mod's copies
             const fs::path folder = change_models(mod->dir, m.world.code, m.room->index);
-            p.model_source = folder / p.model_source.filename();
+            if (!p.model_source.empty())
+                p.model_source = folder / p.model_source.filename();
             if (!p.collision_source.empty())
                 p.collision_source = folder / p.collision_source.filename();
             p.from_mod = true;
@@ -1689,6 +3105,7 @@ void room_offer(App& app, const Item& item, const fs::path& file) {
     } else {
         p.model_source = file;
         p.raw = std::move(model);
+        p.r.model = u8(file.filename());  // no longer only markers: the room takes this model
     }
     if (!p.active) {
         p.active = true;
@@ -1730,6 +3147,8 @@ void draw_map_view(App& app, const Item& item) {
     }
     if (m.rep.dirty)
         rebuild();  // the modder's room made before it is counted and drawn
+    else if (m.rep.edits_dirty)
+        reapply_edits();
     ImGui::TextUnformatted(
         fmt(lang, S::map_room, {std::to_string(m.room->index), std::to_string(m.room->id), world_path(m.world.code)})
             .c_str());
@@ -1758,14 +3177,41 @@ void draw_map_view(App& app, const Item& item) {
     ImGui::Checkbox(tr(lang, S::map_ceilings), &m.show_ceilings);
     same_line_if_room(check_width(tr(lang, S::map_markers)));
     ImGui::Checkbox(tr(lang, S::map_markers), &m.show_markers);
+    // the bar over the picture: the collision editor's tools
+    draw_map_toolbar(app);
+    // the picture takes what the bar under it leaves (two rows, three when its fields wrap); the room's
+    // other controls are in the left panel, under the catalog (draw_map_controls)
     const ImVec2 avail = ImGui::GetContentRegionAvail();
-    draw_room(app, ImVec2(avail.x, std::max(260.0f, avail.y * 0.5f)));
-    ImGui::TextDisabled("%s", tr(lang, S::map_controls));
-    ImGui::BeginChild("##room_controls", ImVec2(0, 0), ImGuiChildFlags_None);
+    const float row = ImGui::GetFrameHeightWithSpacing();
+    const float bottom = (m.editing ? 3.0f : 1.0f) * row + ImGui::GetStyle().WindowPadding.y;
+    draw_room(app, ImVec2(avail.x, std::max(160.0f, avail.y - bottom)));
+    ImGui::BeginChild("##map_bottom_bar", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+    draw_map_bottom_bar(app);
+    ImGui::EndChild();
+}
+
+void draw_map_controls(App& app, const Item& item) {
+    if (m.item != app.selected || m.mod != app.mod)
+        open(app);
+    if (m.room == nullptr)
+        return;
+    // Undo / Redo of everything the room's change holds (hand edits, markers, exits' models), whatever is
+    // open, while no field is typed in and nothing is being dragged
+    const ImGuiIO& io = ImGui::GetIO();
+    if (m.rep.active && !io.WantTextInput && m.gizmo_drag < 0 && !ImGui::IsAnyItemActive()) {
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false))
+            edit_undo(io.KeyShift);
+        else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false))
+            edit_undo(true);
+    }
+    if (m.rep.dirty)
+        rebuild();
+    else if (m.rep.edits_dirty)
+        reapply_edits();
     draw_replace(app, item);
+    draw_collision_editor(app);
     draw_details(app);
     draw_lists(app);
-    ImGui::EndChild();
 }
 
 }  // namespace studio
