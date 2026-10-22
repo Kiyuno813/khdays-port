@@ -24,6 +24,8 @@ struct Settings {
     float map_tree = 0.45f;
     // the Maps view's camera: looking around from where it stands (else orbiting the point in front of it)
     bool map_camera_fps = false;
+    // the Maps view's field of view over the picture's height, in degrees (10 to 120)
+    float map_fov = 35.0f;
     // KINGDOM HEARTS HD 1.5+2.5 ReMIX's folder, KH2's rooms come from; empty: the one the install made
     // its HD pieces from (setup/state.json)
     std::string collection_1525;

@@ -60,6 +60,9 @@ rotation turned from the blend the reader makes.
 
 ## Rooms
 
+The map editor's features (panels, toolbars, camera, markers and exits, the
+collision editor) are laid out for users in `docs/map-editor/index.html`.
+
 A room of a mission world replaced by the modder's model
 (`core/rooms/room_change.h`):
 

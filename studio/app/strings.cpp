@@ -1374,6 +1374,13 @@ constexpr Row rows[] =
           "Arrastrar con el izquierdo en la imagen. Órbita: la cámara gira alrededor del punto que tiene delante. "
           "Primera persona: se queda donde está y mira alrededor. Arrastrar con el derecho o el central, W A S D, "
           "Q E y la rueda la mueven igual en los dos."}},
+        {S::map_fov, {"FOV:", nullptr, nullptr, nullptr, "FOV:"}},
+        {S::map_fov_hint,
+         {"The camera's field of view over the picture's height, in degrees (10 to 120). Drag left or right, or "
+          "double-click to type a value. Right-click: back to 35.",
+          nullptr, nullptr, nullptr,
+          "El campo de visión de la cámara sobre el alto de la imagen, en grados (10 a 120). Arrastrar a la "
+          "izquierda o a la derecha, o doble clic para escribir un valor. Clic derecho: vuelve a 35."}},
         {S::kind_mission, {"Missions", "Missions", "Missionen", "Missioni", "Misiones"}},
         {S::mission_header,
          {"{0}: {1} entries, {2} scripts, {3} steps", "{0} : {1} entrées, {2} scripts, {3} étapes",

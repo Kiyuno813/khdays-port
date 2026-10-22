@@ -120,6 +120,14 @@ Settings load_settings(const fs::path& root, std::string* note) {
                     good = false;
                 else
                     (key == "map_tree" ? read.map_tree : read.browser_width) = share;
+            } else if (key == "map_fov") {
+                // degrees over the picture's height, as the FOV field allows
+                float fov = 0.0f;
+                const auto r = std::from_chars(value.data(), value.data() + value.size(), fov);
+                if (r.ec != std::errc() || r.ptr != value.data() + value.size() || !(fov >= 10.0f && fov <= 120.0f))
+                    good = false;
+                else
+                    read.map_fov = fov;
             } else if (key == "cache_mb") {
                 int mb = 0;
                 const auto r = std::from_chars(value.data(), value.data() + value.size(), mb);
@@ -175,6 +183,7 @@ bool save_settings(const Settings& s, std::string* why) {
             << "browser_width = " << s.browser_width << "\n"
             << "map_tree = " << s.map_tree << "\n"
             << "map_camera = " << (s.map_camera_fps ? "first-person" : "orbit") << "\n"
+            << "map_fov = " << s.map_fov << "\n"
             << "collection_1525 = " << s.collection_1525 << "\n";
         if (!out) {
             if (why != nullptr)

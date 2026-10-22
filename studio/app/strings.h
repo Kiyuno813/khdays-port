@@ -429,6 +429,8 @@ enum class S {
     map_camera_orbit,
     map_camera_fps,
     map_camera_hint,
+    map_fov,
+    map_fov_hint,
     kind_mission,
     mission_header,
     mission_hint,

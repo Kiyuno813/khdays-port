@@ -97,17 +97,24 @@ private:
     bool failed_ = false;
 };
 
-// A camera turning around `target`: yaw and pitch in degrees, `distance`.
-Mat orbit_view_projection(std::array<float, 3> target, float yaw, float pitch, float distance, float aspect);
+// The orbit camera's field of view over the picture's height, in degrees: the default and the range the
+// Maps view's FOV field allows.
+constexpr float kOrbitFov = 35.0f, kOrbitFovMin = 10.0f, kOrbitFovMax = 120.0f;
+
+// A camera turning around `target`: yaw and pitch in degrees, `distance`, `fov` degrees over the height.
+Mat orbit_view_projection(std::array<float, 3> target, float yaw, float pitch, float distance, float aspect,
+                          float fov = kOrbitFov);
 std::array<float, 3> orbit_eye_direction(float yaw, float pitch);
 // The way (unit length) from an orbit camera's eye through the point (x, y) of a `width` x `height` picture.
-std::array<float, 3> orbit_ray(float yaw, float pitch, float x, float y, float width, float height);
+std::array<float, 3> orbit_ray(float yaw, float pitch, float x, float y, float width, float height,
+                               float fov = kOrbitFov);
 
 // The point an orbit camera turns around, moved over a view `view_height`
 // pixels tall while the mouse is over it (`hovered`): dragged with the right
 // or middle button across the view, as far as the picture moves under the
 // mouse; W/S forward and back, A/D left and right, Q/E down and up (Shift:
-// four times as fast), half as far a second as the camera is from it.
-void orbit_move(std::array<float, 3>& target, float yaw, float pitch, float distance, float view_height, bool hovered);
+// four times as fast), half as far a second as the camera is from it. `fov` as the camera's.
+void orbit_move(std::array<float, 3>& target, float yaw, float pitch, float distance, float view_height, bool hovered,
+                float fov = kOrbitFov);
 
 }  // namespace studio

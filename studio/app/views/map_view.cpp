@@ -629,8 +629,8 @@ void draw_room(App& app, ImVec2 size) {
     Preview& p = *m.preview;
     p.collect();
     const int w = std::max(64, static_cast<int>(size.x)), h = std::max(64, static_cast<int>(size.y));
-    const Mat vp =
-        orbit_view_projection(m.target, m.yaw, m.pitch, m.distance, static_cast<float>(w) / static_cast<float>(h));
+    const Mat vp = orbit_view_projection(m.target, m.yaw, m.pitch, m.distance,
+                                         static_cast<float>(w) / static_cast<float>(h), app.settings.map_fov);
     p.begin(w, h, vp, orbit_eye_direction(m.yaw, m.pitch));
 
     const bool yours = m.rep.active && m.rep.view != 1 && !m.rep.model_source.empty();
@@ -1009,7 +1009,7 @@ void draw_room(App& app, ImVec2 size) {
             bool snap_shown = false;
             auto surface_under = [&](std::array<double, 3>* out) {
                 const auto dir = orbit_ray(m.yaw, m.pitch, mouse.x - at.x, mouse.y - at.y, static_cast<float>(w),
-                                           static_cast<float>(h));
+                                           static_cast<float>(h), app.settings.map_fov);
                 RayHit hit;
                 if (!cast_ray(
                         shown(), {eye[0], eye[1], eye[2]}, {dir[0], dir[1], dir[2]},
@@ -1409,7 +1409,7 @@ void draw_room(App& app, ImVec2 size) {
                         stand[2] - after[2] * m.distance};
         }
     }
-    orbit_move(m.target, m.yaw, m.pitch, m.distance, static_cast<float>(h), hovered);
+    orbit_move(m.target, m.yaw, m.pitch, m.distance, static_cast<float>(h), hovered, app.settings.map_fov);
     if (hovered && ImGui::GetIO().MouseWheel != 0.0f)
         m.distance *= std::pow(0.9f, ImGui::GetIO().MouseWheel);
 }
@@ -2865,23 +2865,72 @@ void draw_map_tools(App& app) {
     ImGui::PopID();
 }
 
+// "FOV:" and the camera's field of view: dragged, or typed after a double-click (or Ctrl+click); a right-click
+// puts back the default. Kept in the settings when let go.
+float fov_field_width() {
+    return 4.0f * ImGui::GetFontSize();
+}
+
+float fov_width(const App& app) {
+    return ImGui::CalcTextSize(tr(app.language, S::map_fov)).x + ImGui::GetStyle().ItemSpacing.x + fov_field_width();
+}
+
+void draw_fov_field(App& app) {
+    const auto lang = app.language;
+    ImGui::PushID("fov");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(tr(lang, S::map_fov));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tr(lang, S::map_fov_hint));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(fov_field_width());
+    ImGui::DragFloat("##fov", &app.settings.map_fov, 0.25f, kOrbitFovMin, kOrbitFovMax, "%.1f",
+                     ImGuiSliderFlags_AlwaysClamp);
+    bool save = ImGui::IsItemDeactivatedAfterEdit();
+    if (ImGui::IsItemHovered() && !ImGui::IsItemActive())
+        ImGui::SetTooltip("%s", tr(lang, S::map_fov_hint));
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && app.settings.map_fov != kOrbitFov) {
+        app.settings.map_fov = kOrbitFov;
+        save = true;
+    }
+    if (save) {
+        std::string why;
+        if (!save_settings(app.settings, &why))
+            app.tell(fmt(lang, S::save_failed, {why}), false);
+    }
+    ImGui::PopID();
+}
+
 // The bar over the picture: the collision editor's tools, then (at its right end) the camera: orbiting the
-// point in front of it, or looking around from where it stands (kept in the settings).
+// point in front of it, or looking around from where it stands, with its field of view over it at the end of
+// the view's checkboxes' row (all kept in the settings).
 void draw_map_toolbar(App& app) {
     const auto lang = app.language;
+    // the row before the bar (the view's checkboxes, its last one just drawn): its top and where it ends
+    const float above_y = ImGui::GetItemRectMin().y, above_end = ImGui::GetItemRectMax().x;
     draw_map_tools(app);
+    const float space = ImGui::GetStyle().ItemSpacing.x;
     const char* label = tr(lang, S::map_camera);
-    const float width = ImGui::CalcTextSize(label).x + button_width(tr(lang, S::map_camera_orbit)) +
-                        button_width(tr(lang, S::map_camera_fps)) + 2 * ImGui::GetStyle().ItemSpacing.x;
-    // at the right end of the tools' last row (of the view's checkboxes when there are no tools) when it has
-    // room, else a row of its own
-    const float right = ImGui::GetWindowContentRegionMax().x;
+    float width = ImGui::CalcTextSize(label).x + button_width(tr(lang, S::map_camera_orbit)) +
+                  button_width(tr(lang, S::map_camera_fps)) + 2 * space;
+    const float right = ImGui::GetWindowContentRegionMax().x, right_x = ImGui::GetWindowPos().x + right;
+    const float fov_w = fov_width(app);
+    // the FOV field over the camera when the checkboxes' row has room at its end, else before "Camera:"
+    const bool fov_above = above_end + space + fov_w <= right_x;
+    if (!fov_above)
+        width += fov_w + space;
+    // at the right end of the tools' last row when it has room, else a row of its own (also when there are
+    // no tools: the row it would share is the checkboxes', the FOV field's)
     ImGui::SameLine();
-    if (ImGui::GetCursorPosX() + width > right)
+    const bool on_above_row = std::abs(ImGui::GetCursorScreenPos().y - above_y) < 0.5f;
+    if (ImGui::GetCursorPosX() + width > right || (fov_above && on_above_row))
         ImGui::NewLine();
-    else
-        ImGui::SetCursorPosX(right - width);
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), right - width));
     ImGui::PushID("camera");
+    if (!fov_above) {
+        draw_fov_field(app);
+        ImGui::SameLine();
+    }
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label);
     if (ImGui::IsItemHovered())
@@ -2898,6 +2947,13 @@ void draw_map_toolbar(App& app) {
         std::string why;
         if (!save_settings(app.settings, &why))
             app.tell(fmt(lang, S::save_failed, {why}), false);
+    }
+    if (fov_above) {
+        // over the camera, right-aligned with it, then back to where the bar ends
+        const ImVec2 back = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos(ImVec2(right_x - fov_w, above_y));
+        draw_fov_field(app);
+        ImGui::SetCursorScreenPos(back);
     }
     ImGui::PopID();
 }

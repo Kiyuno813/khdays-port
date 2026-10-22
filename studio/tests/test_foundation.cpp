@@ -56,6 +56,8 @@ TEST(settings_defaults_and_bad_file) {
     s.map_tree = 0.6f;
     CHECK(!s.map_camera_fps);
     s.map_camera_fps = true;
+    CHECK(s.map_fov == 35.0f);
+    s.map_fov = 72.5f;
     s.mod = "My Mod";
     s.language = "es";
     s.cache_mb = 64;
@@ -66,6 +68,7 @@ TEST(settings_defaults_and_bad_file) {
     CHECK(again.cache_mb == 64);
     CHECK(!again.browser_tree);
     CHECK(again.browser_width == 0.3f && again.map_tree == 0.6f && again.map_camera_fps);
+    CHECK(again.map_fov == 72.5f);
 
     studio_test::write(settings_file(root), "this line has no equals sign\n");
     note.clear();

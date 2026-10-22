@@ -307,7 +307,10 @@ settings.
      point in front of it while you drag with the left button; First person
      keeps the camera where it stands and looks around. Right or middle drag, W
      A S D, Q E and the wheel move it the same in both; the choice is kept in
-     the settings.
+     the settings. **FOV** (over the camera choice) is the field of view over
+     the picture's height, 10 to 120 degrees (35 by default): drag the box left
+     or right, or double-click (or Ctrl+click) it to type a value; a
+     right-click puts back 35. It is kept in the settings as `map_fov`.
    - **Markers and exits' models.** Pick a marker (where a character arriving
      through an exit appears) to move or turn it, or drop it "onto the
      ground"; the exits' models (the gate and its props, yellow) are moved by
