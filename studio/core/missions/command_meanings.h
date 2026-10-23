@@ -75,6 +75,9 @@ struct ScriptPlaces {
     std::vector<Start> starts;
 };
 ScriptPlaces script_places(const Script& s);
+// Every world a mission's scripts load (Ov002_ScriptCmd_LoadWorldLinkResources with a whole number), each
+// once, in the order its entries and their scripts are met: most missions one, a few several.
+std::vector<int> mission_worlds(const MissionFile& m);
 std::string meaning_text(const StepMeaning& m);
 // meaning_text(step_meaning(s, script)), empty when not read
 std::string operands_meaning(const ScriptStep& s, const Script* script = nullptr);

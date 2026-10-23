@@ -2,6 +2,7 @@
 
 #include "core/missions/command_names.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -277,6 +278,24 @@ ScriptPlaces script_places(const Script& s) {
         }
     }
     return p;
+}
+
+std::vector<int> mission_worlds(const MissionFile& m) {
+    std::vector<int> worlds;
+    for (const auto& e : m.entries) {
+        for (const auto& s : e.archive.scripts) {
+            for (const auto& st : s.steps) {
+                const CommandName* n = command_name(st.group, st.command);
+                if (n == nullptr || std::strcmp(n->handler, "Ov002_ScriptCmd_LoadWorldLinkResources") != 0 ||
+                    st.words.size() < 2)
+                    continue;
+                const OperandSlot o = operand_at(st, 0);
+                if (o.mode == 1 && std::find(worlds.begin(), worlds.end(), o.value) == worlds.end())
+                    worlds.push_back(o.value);
+            }
+        }
+    }
+    return worlds;
 }
 
 std::string meaning_text(const StepMeaning& m) {

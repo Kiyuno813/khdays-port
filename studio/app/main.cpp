@@ -188,7 +188,11 @@ void draw_frame(App& app, bool* settings_open, bool* themes_open, bool* console_
                                  ? &app.catalog.items[static_cast<std::size_t>(app.selected)]
                                  : nullptr;
     if (shown_room == nullptr) {
+        // the same child as with a room shown: ImGui keeps the folders' open state per window, so the catalog
+        // keeps its open folders whatever is shown
+        ImGui::BeginChild("##catalog", ImVec2(0, 0), ImGuiChildFlags_None);
         draw_browser(app);
+        ImGui::EndChild();
     } else {
         // a room shown: the catalog over its controls, the line between them dragged, each at least 120 high
         const float height = ImGui::GetContentRegionAvail().y;

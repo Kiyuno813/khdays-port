@@ -50,6 +50,27 @@ const PlacedSet* placed_set(const std::vector<PlacedSet>& sets, int mission);
 bool load_placed_sets(const std::filesystem::path& nitrofs, const std::string& name, std::vector<PlacedSet>* out,
                       std::string* why);
 
+// The story's Holo-Missions list (UI/cm/msl_<lang>.msi.z, Ov025): a u16 count, then records each starting
+// with its u16 size -- +2 the mission file it starts (mi/mi/<file>), +4 the number the game shows, +6 and
+// +8 the first and last day it is on the list (Ov025_MissionList_HasVisibleMissionInDays) -- its UTF-16
+// texts from +0x30 (name, briefing, ...; 0x01 and 0x02 mark highlights). A mission has several records
+// (briefing variants); files from 10000 are the story days' scripts.
+struct MissionListEntry {
+    int file = 0, number = 0, first_day = 0, last_day = 0;
+    std::string name;  // UTF-8, its highlight marks left out
+};
+bool parse_mission_list(const std::vector<std::uint8_t>& d, std::vector<MissionListEntry>* out, std::string* why);
+// UI/cm/msl_<language>.msi.z read (LZ undone) and parsed; `language` en, fr, de, it or es.
+bool load_mission_list(const std::filesystem::path& nitrofs, const std::string& language,
+                       std::vector<MissionListEntry>* out, std::string* why);
+
+// The worlds' names (UI/cm/str/world_id_<lang>.s.z): a word, a u32 count, then each name as a u32 size (its
+// own four bytes included) and UTF-16 -- in the order of the world codes (world_code: tt aw he al eh nm hb zz
+// pp bb tw pi), the index a script's LoadWorldLinkResources names.
+bool parse_world_names(const std::vector<std::uint8_t>& d, std::vector<std::string>* out, std::string* why);
+bool load_world_names(const std::filesystem::path& nitrofs, const std::string& language, std::vector<std::string>* out,
+                      std::string* why);
+
 // The four files' names under mi/mi, and the check of one: read (LZ
 // undone for .z), parsed, written back the same bytes.
 std::vector<std::string> mission_db_files();

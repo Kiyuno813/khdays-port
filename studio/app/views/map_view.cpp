@@ -115,6 +115,11 @@ struct MapView {
     bool show_models = true, show_ground = false, show_walls = false, show_ceilings = false, show_markers = true;
     float yaw = 30.0f, pitch = 35.0f, distance = 40.0f;
     std::array<float, 3> target{0, 0, 0};
+    // a mission's point asked for (See spawner, See chest) ringed, breathing, for kRingSeconds (since < 0:
+    // none); the camera stays where it is
+    double ring_since = -1;
+    std::array<float, 3> ring_at{};
+    int ring_kind = 0;
     int picked_list = -1, picked_face = -1, picked_marker = -1;
     // an exit's model picked in the picture: its link key and which of its five models
     bool picked_gate = false;
@@ -283,6 +288,21 @@ std::string names_of(int list, const RoomFace& f) {
         out += (out.empty() ? "" : ", ") + shown().named[s].text();
     }
     return out;
+}
+
+constexpr double kRingSeconds = 5.0;
+
+// A point the mission view asked to see (MissionOverlay::focus): once its room is the one shown, ringed for a
+// few seconds. The camera is not moved: one look at spawner after spawner keeps the view the person chose.
+void ring_focused_point() {
+    MissionOverlay& mo = mission_overlay();
+    if (!mo.focus || m.room == nullptr || mo.world != m.world.code || mo.room != m.room->index)
+        return;
+    mo.focus = false;
+    m.ring_since = ImGui::GetTime();
+    m.ring_at = {static_cast<float>(mo.focus_at[0]) * kFx, static_cast<float>(mo.focus_at[1]) * kFx,
+                 static_cast<float>(mo.focus_at[2]) * kFx};
+    m.ring_kind = mo.focus_kind;
 }
 
 void frame_camera() {
@@ -629,6 +649,7 @@ void draw_room(App& app, ImVec2 size) {
     Preview& p = *m.preview;
     p.collect();
     const int w = std::max(64, static_cast<int>(size.x)), h = std::max(64, static_cast<int>(size.y));
+    ring_focused_point();
     const Mat vp = orbit_view_projection(m.target, m.yaw, m.pitch, m.distance,
                                          static_cast<float>(w) / static_cast<float>(h), app.settings.map_fov);
     p.begin(w, h, vp, orbit_eye_direction(m.yaw, m.pitch));
@@ -887,17 +908,74 @@ void draw_room(App& app, ImVec2 size) {
     // pink, labels on hover
     const MissionOverlay& mo = mission_overlay();
     if (mo.world == m.world.code && mo.room == m.room->index) {
+        static const ImU32 kPointColours[] = {IM_COL32(80, 255, 120, 255), IM_COL32(90, 170, 255, 255),
+                                              IM_COL32(255, 200, 60, 255), IM_COL32(255, 110, 210, 255)};
+        std::string tip;
         for (const auto& pt : mo.points) {
             float x, y;
             if (!project({static_cast<float>(pt.at[0]) * kFx, static_cast<float>(pt.at[1]) * kFx,
                           static_cast<float>(pt.at[2]) * kFx},
                          &x, &y))
                 continue;
-            static const ImU32 colors[] = {IM_COL32(80, 255, 120, 255), IM_COL32(90, 170, 255, 255),
-                                           IM_COL32(255, 200, 60, 255), IM_COL32(255, 110, 210, 255)};
-            list->AddCircle(ImVec2(x, y), 7.0f, colors[pt.kind], 0, 2.5f);
+            list->AddCircle(ImVec2(x, y), 7.0f, kPointColours[pt.kind], 0, 2.5f);
+            // every point under the pointer (spawners often share a place), one after another
             if (hovered && std::hypot(x - mouse.x, y - mouse.y) < 9.0f)
-                ImGui::SetTooltip("%s", pt.label.c_str());
+                tip += (tip.empty() ? "" : "\n\n") + pt.label;
+        }
+        if (!tip.empty())
+            ImGui::SetTooltip("%s", tip.c_str());
+        // the point asked for: a faint ring breathing around it, fading out; out of the picture, an arrow at
+        // its edge pointing the way to it
+        const double age = ImGui::GetTime() - m.ring_since;
+        if (m.ring_since >= 0 && age < kRingSeconds) {
+            const float fade = static_cast<float>(std::min(1.0, (kRingSeconds - age) / 1.5));
+            const float breath = 0.5f + 0.5f * static_cast<float>(std::sin(age * 2.0 * 3.14159265 * 0.8));
+            const ImU32 c = kPointColours[m.ring_kind];
+            const auto with_alpha = [&](float a) {
+                return (c & ~IM_COL32_A_MASK) |
+                       (static_cast<ImU32>(std::clamp(a, 0.0f, 1.0f) * 255.0f) << IM_COL32_A_SHIFT);
+            };
+            const float pw = static_cast<float>(w), ph = static_cast<float>(h);
+            float x, y;
+            const bool seen = project(m.ring_at, &x, &y) && x >= at.x && x <= at.x + pw && y >= at.y && y <= at.y + ph;
+            if (seen) {
+                const float r = 16.0f + 7.0f * breath;
+                list->AddCircleFilled(ImVec2(x, y), r, with_alpha(0.10f * fade));
+                list->AddCircle(ImVec2(x, y), r, with_alpha((0.35f + 0.25f * breath) * fade), 0, 2.0f);
+            } else {
+                // the point in the camera's terms (right, up, ahead), as orbit_view_projection makes them
+                const auto back = orbit_eye_direction(m.yaw, m.pitch);
+                const std::array<float, 3> f{-back[0], -back[1], -back[2]};
+                std::array<float, 3> s{-f[2], 0.0f, f[0]};  // f x (0, 1, 0)
+                const float sl = std::max(1e-6f, std::hypot(s[0], s[2]));
+                s = {s[0] / sl, 0.0f, s[2] / sl};
+                const std::array<float, 3> u{s[1] * f[2] - s[2] * f[1], s[2] * f[0] - s[0] * f[2],
+                                             s[0] * f[1] - s[1] * f[0]};
+                std::array<float, 3> d{};
+                for (std::size_t k = 0; k < 3; ++k)
+                    d[k] = m.ring_at[k] - (m.target[k] + back[k] * m.distance);
+                float dx = d[0] * s[0] + d[1] * s[1] + d[2] * s[2];
+                float dy = -(d[0] * u[0] + d[1] * u[1] + d[2] * u[2]);  // the picture's y runs down
+                const float len = std::hypot(dx, dy);
+                if (len < 1e-4f)
+                    dx = 0.0f, dy = 1.0f;  // straight behind: point down
+                else
+                    dx /= len, dy /= len;
+                // from the picture's middle to its edge (kept off it), along the way to the point
+                const float margin = 26.0f;
+                const ImVec2 mid(at.x + pw * 0.5f, at.y + ph * 0.5f);
+                const float reach = std::min(std::abs(dx) > 1e-4f ? (pw * 0.5f - margin) / std::abs(dx) : 1e9f,
+                                             std::abs(dy) > 1e-4f ? (ph * 0.5f - margin) / std::abs(dy) : 1e9f);
+                const ImVec2 point(mid.x + dx * reach, mid.y + dy * reach);
+                const float arrow = 12.0f + 3.0f * breath;
+                const ImVec2 side(-dy, dx);
+                const ImVec2 base(point.x - dx * arrow * 1.6f, point.y - dy * arrow * 1.6f);
+                list->AddCircleFilled(ImVec2((point.x + base.x) * 0.5f, (point.y + base.y) * 0.5f), arrow * 1.4f,
+                                      with_alpha(0.12f * fade));
+                list->AddTriangleFilled(point, ImVec2(base.x + side.x * arrow, base.y + side.y * arrow),
+                                        ImVec2(base.x - side.x * arrow, base.y - side.y * arrow),
+                                        with_alpha((0.55f + 0.3f * breath) * fade));
+            }
         }
     }
     // the exits' models (the world's gate models of this room's links), where the change puts them; the one

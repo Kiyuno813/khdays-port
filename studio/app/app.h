@@ -166,9 +166,17 @@ struct MissionPoint {
 struct MissionOverlay {
     std::string world;  // tt, aw ...
     int room = -1;
+    int mission = -1;  // the catalog item of the mission whose points these are (kept up to date while it is open)
     std::vector<MissionPoint> points;
+    // a point the map view rings once its room is shown (See spawner, See chest); the camera is not moved
+    bool focus = false;
+    std::array<std::int32_t, 3> focus_at{};
+    MissionPoint::Kind focus_kind = MissionPoint::spawner;
 };
 MissionOverlay& mission_overlay();
+// What the catalog says beside a mission file: its day or days and its name, from the story's mission list
+// in the interface's language ("Days 51-54 · Eliminate the Tailbunker"); empty when the list has none.
+const std::string& mission_list_label(const App& app, const Item& item);
 void draw_map_view(App& app, const Item& item);
 // A room's controls (replacing it, editing its collision, what is picked, its lists), drawn in the left
 // panel under the catalog while a room is shown.

@@ -619,7 +619,41 @@ int check_missions(const fs::path& root) {
                      u8(root / "data" / "extracted").c_str());
         return 1;
     }
-    const bool ok = check_all_missions(nitrofs, [](const std::string& line) { std::printf("%s\n", line.c_str()); });
+    bool ok = check_all_missions(nitrofs, [](const std::string& line) { std::printf("%s\n", line.c_str()); });
+    // the story's mission lists (the catalog's days and names beside each mission)
+    for (const char* language : {"en", "fr", "de", "it", "es"}) {
+        std::vector<MissionListEntry> list;
+        std::string why;
+        if (!load_mission_list(nitrofs, language, &list, &why)) {
+            std::printf("FAIL %s\n", why.c_str());
+            ok = false;
+            continue;
+        }
+        std::set<int> files;
+        for (const auto& e : list)
+            files.insert(e.file);
+        std::printf("ok   UI/cm/msl_%s.msi.z: %zu records, %zu mission files\n", language, list.size(), files.size());
+        std::vector<std::string> names;
+        if (!load_world_names(nitrofs, language, &names, &why)) {
+            std::printf("FAIL %s\n", why.c_str());
+            ok = false;
+        } else {
+            std::printf("ok   UI/cm/str/world_id_%s.s.z: %zu worlds (%s ... %s)\n", language, names.size(),
+                        names.empty() ? "" : names.front().c_str(), names.empty() ? "" : names.back().c_str());
+        }
+    }
+    // the worlds each mission's scripts load (the catalog's world beside each mission)
+    std::map<std::size_t, int> by_count;
+    for (const int number : mission_numbers(nitrofs)) {
+        MissionFile m;
+        std::string why;
+        if (load_mission(nitrofs, number, &m, &why))
+            ++by_count[mission_worlds(m).size()];
+    }
+    std::string counts;
+    for (const auto& [n, files] : by_count)
+        counts += (counts.empty() ? "" : ", ") + std::to_string(files) + " in " + std::to_string(n);
+    std::printf("mission files by the worlds their scripts load: %s\n", counts.c_str());
     return ok ? 0 : 1;
 }
 

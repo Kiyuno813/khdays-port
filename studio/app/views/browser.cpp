@@ -7,6 +7,10 @@
 #include "imgui.h"
 #include "imgui_stdlib.h"
 
+#include <algorithm>
+#include <cctype>
+#include <sstream>
+
 namespace studio {
 
 namespace {
@@ -49,6 +53,36 @@ struct TreeView {
     std::vector<char> reveal;  // nodes to open this frame (on the way to the selected item)
 };
 TreeView tv;
+
+// Missions found by what the catalog says beside them too (their day and name): "tailbunker", "day 51".
+void add_mission_name_matches(App& app) {
+    const auto folded = [](std::string s) {
+        for (auto& c : s)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    };
+    const std::string query = folded(app.search);
+    if (query.find_first_not_of(' ') == std::string::npos ||
+        (app.kinds & (1u << static_cast<unsigned>(Kind::mission))) == 0)
+        return;
+    const auto found = static_cast<std::ptrdiff_t>(app.results.size());  // sorted: the key's matches
+    for (int i = 0; i < static_cast<int>(app.catalog.items.size()); ++i) {
+        const Item& item = app.catalog.items[static_cast<std::size_t>(i)];
+        const std::string& said = mission_list_label(app, item);
+        if (said.empty())
+            continue;
+        const std::string text = item.folded + " " + folded(said);
+        std::istringstream words(query);
+        std::string w;
+        bool all = true;
+        while (all && words >> w)
+            all = text.find(w) != std::string::npos;
+        if (all && !std::binary_search(app.results.begin(), app.results.begin() + found, i))
+            app.results.push_back(i);
+    }
+    if (static_cast<std::ptrdiff_t>(app.results.size()) > found)
+        std::sort(app.results.begin(), app.results.end());
+}
 
 void select_item(App& app, int index) {
     if (app.selected != index) {
@@ -111,11 +145,17 @@ void draw_tree_node(App& app, int n) {
                 "##leaf",
                 ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth |
                     (app.selected == index || app.mission_beside == index ? ImGuiTreeNodeFlags_Selected : 0),
-                "%s  %s", kind_tag(item.kind), leaf_name(item.key).c_str());
+                "%s  %s%s%s", kind_tag(item.kind), leaf_name(item.key).c_str(),
+                mission_list_label(app, item).empty() ? "" : "   ", mission_list_label(app, item).c_str());
             if (ImGui::IsItemClicked())
                 select_item(app, index);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", item.group.c_str());
+            if (ImGui::IsItemHovered()) {
+                const std::string& said = mission_list_label(app, item);
+                if (said.empty())
+                    ImGui::SetTooltip("%s", item.group.c_str());
+                else
+                    ImGui::SetTooltip("%s\n%s", said.c_str(), item.group.c_str());
+            }
             if (row == wanted) {
                 ImGui::SetScrollHereY(0.3f);
                 tv.revealed = app.selected;
@@ -151,7 +191,8 @@ void draw_tree(App& app) {
             tv.revealed = app.selected;  // not in these results
         }
     }
-    ImGui::BeginChild("##tree", ImVec2(0, 0), ImGuiChildFlags_None);
+    // scrolled sideways when a line is wider than the panel (a mission's day, name and world)
+    ImGui::BeginChild("##tree", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
     for (const int c : tv.tree.nodes[0].children)
         draw_tree_node(app, c);
     for (const int index : tv.tree.nodes[0].items) {  // keys with no folder
@@ -206,6 +247,7 @@ void draw_browser(App& app) {
     }
     if (app.results_stale) {
         app.results = app.catalog.search(app.search, app.kinds);
+        add_mission_name_matches(app);
         app.results_stale = false;
     }
     ImGui::TextDisabled("%s", fmt(app.language, S::results, {std::to_string(app.results.size())}).c_str());
@@ -253,6 +295,10 @@ void draw_browser(App& app) {
             const auto slash = item.key.find_last_of('/');
             ImGui::TableSetColumnIndex(1);
             ImGui::TextUnformatted(slash == std::string::npos ? item.key.c_str() : item.key.c_str() + slash + 1);
+            if (const std::string& said = mission_list_label(app, item); !said.empty()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", said.c_str());
+            }
             ImGui::TableSetColumnIndex(2);
             ImGui::TextDisabled("%s", item.group.c_str());
         }

@@ -346,7 +346,29 @@ settings.
    values can be changed while the room shows them; the room's own tools are
    folded into "Map editor" above the mission (opened, a line between the two
    sets their heights). Picking anything in the catalog lets the mission go;
-   picking the mission shows it on the right again, its unsaved changes kept. "Save into the mod" writes `files/mi/mi/<number>`
+   picking the mission shows it on the right again, its unsaved changes kept.
+   Spawners and chests also have "See spawner" / "See chest": the room
+   opens (or stays, the camera where it is) and a faint ring marks the point
+   for five seconds -- or, when it is out of view, an arrow at the picture's
+   edge points the way to it.
+   Over the map, a spawner's tooltip says its number, its group and the
+   group's enemies with how many of each (every point under the pointer when
+   several share a place), a chest's its number, contents key and facing;
+   the points follow the mission's values as they are changed.
+
+   In the catalog each mission file has its day (or days), name and world
+   beside it: the day and name from the story's mission list in the
+   interface's language (`UI/cm/msl_<lang>.msi`), the world from what its
+   scripts load, named by `UI/cm/str/world_id_<lang>.s` ("Days 51-54 ·
+   Eliminate the Tailbunker · Twilight Town"; "Mission Mode · ..." for the
+   tutorial, "story days" for 10000 and up, "4 worlds" for a file loading
+   several, the world alone for a file the list does not name). The search
+   finds missions by those words too ("tailbunker", "day 51", "agrabah"), a
+   line wider than the panel scrolls sideways and its tooltip shows it whole.
+   Over the mission's view a header says its number and name, its days, its
+   world (all of them when several) and how many spawners, chests and
+   emblems it has now. `--check-missions` also reads the five lists and the
+   five world name tables and counts the files by the worlds they load. "Save into the mod" writes `files/mi/mi/<number>`
    and, when its chests or emblems changed, `files/mi/mi/trbox` / `evi`
    (every mission's, this one's set changed), each read back first; a notice
    says what was written. "Give the mission back to the game" removes them

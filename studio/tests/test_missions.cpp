@@ -209,6 +209,63 @@ TEST(the_mission_database_tables_read_back) {
     CHECK(o.record(0).size() == 4 && o.record(1).size() == 8);
 }
 
+TEST(the_mission_list_reads_its_files_days_and_names) {
+    // two records: file 157 shown as 17 on days 51-54 named "Eliminate" with a highlight mark and an e-acute,
+    // then file 10001 on days 9-13
+    Bytes d;
+    add16(d, 2);
+    const auto record = [&](int file, int number, int first, int last, const std::u16string& name) {
+        const std::size_t at = d.size();
+        add16(d, 0);  // its size, put below
+        add16(d, static_cast<std::uint32_t>(file));
+        add16(d, static_cast<std::uint32_t>(number));
+        add16(d, static_cast<std::uint32_t>(first));
+        add16(d, static_cast<std::uint32_t>(last));
+        while (d.size() < at + 0x30)
+            d.push_back(0);
+        for (const char16_t c : name)
+            add16(d, c);
+        add16(d, 0);
+        const std::size_t size = d.size() - at;
+        d[at] = static_cast<std::uint8_t>(size & 0xff);
+        d[at + 1] = static_cast<std::uint8_t>(size >> 8);
+    };
+    record(157, 17, 51, 54,
+           u"\x02"
+           u"Elimin\x01"
+           u"\u00e9");
+    record(10001, 0, 9, 13, u"NEXT DAY");
+    std::vector<MissionListEntry> list;
+    std::string why;
+    CHECK(parse_mission_list(d, &list, &why));
+    CHECK(list.size() == 2);
+    CHECK(list[0].file == 157 && list[0].number == 17 && list[0].first_day == 51 && list[0].last_day == 54);
+    CHECK(list[0].name == "Elimin\xc3\xa9");
+    CHECK(list[1].file == 10001 && list[1].first_day == 9 && list[1].last_day == 13 && list[1].name == "NEXT DAY");
+    d.push_back(0);  // a byte past the records
+    CHECK(!parse_mission_list(d, &list, &why));
+}
+
+TEST(the_world_names_read_in_their_order) {
+    Bytes d;
+    add32(d, 0);
+    add32(d, 2);
+    for (const std::u16string& name : {std::u16string(u"Twilight Town"), std::u16string(u"Pa\u00eds")}) {
+        add32(d, static_cast<std::uint32_t>(4 + 2 * (name.size() + 1)));
+        for (const char16_t c : name)
+            add16(d, c);
+        add16(d, 0);
+    }
+    std::vector<std::string> names;
+    std::string why;
+    CHECK(parse_world_names(d, &names, &why));
+    CHECK(names.size() == 2 && names[0] == "Twilight Town" &&
+          names[1] == "Pa\xc3\xad"
+                      "s");
+    d.push_back(0);
+    CHECK(!parse_world_names(d, &names, &why));
+}
+
 TEST(the_command_tables_name_the_games_steps) {
     // the main program's first command and the field's (from the decompilation's tables)
     const CommandName* n = command_name(0, 0);

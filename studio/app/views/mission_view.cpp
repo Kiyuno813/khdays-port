@@ -216,18 +216,47 @@ const std::vector<PlacedRow>* emblem_rows() {
     return s != nullptr ? &s->rows : nullptr;
 }
 
-// The room shown with every point of the mission in it: spawners, starts, chests, emblems.
-void see_in_room(App& app, const World& world, const ScriptPlaces& p, int room) {
+// The mission's enemy table (em0), false when it has none or it cannot be read.
+bool mission_enemies(EnemyTable* t) {
+    const int em = v.edit.mission.entry("em0");
+    return em >= 0 && parse_enemy_table(v.edit.mission.p2.entries[static_cast<std::size_t>(em)].data, t, nullptr);
+}
+
+// A spawner's words over the map: its number in the summary, its group, and the group's enemies with how many.
+std::string spawner_label(App& app, std::size_t number, int group, const EnemyTable* t) {
     const auto lang = app.language;
-    MissionOverlay& mo = mission_overlay();
-    mo = MissionOverlay{};
-    mo.world = world.code;
-    mo.room = room;
-    for (const auto& sp : p.spawners) {
-        if (room_under(world, p.rooms, sp.at) == room) {
+    std::string text = fmt(lang, S::mission_tip_spawner, {std::to_string(number), std::to_string(group)});
+    if (t == nullptr || group < 0 || static_cast<std::size_t>(group) >= t->groups.size())
+        return text;
+    bool any = false;
+    for (const auto& part : t->groups[static_cast<std::size_t>(group)].parts) {
+        const char* name = part.row < t->kinds.size() ? enemy_name(t->kinds[part.row].id()) : nullptr;
+        text += "\n" + fmt(lang, S::mission_tip_enemy, {std::to_string(part.spawned()), name != nullptr ? name : "?"});
+        any = true;
+    }
+    if (!any)
+        text += "\n" + std::string(tr(lang, S::mission_tip_no_enemies));
+    return text;
+}
+
+std::string chest_label(App& app, std::size_t number, const PlacedRow& r) {
+    const auto lang = app.language;
+    return fmt(lang, S::mission_tip_chest, {std::to_string(number)}) + "\n" +
+           fmt(lang, S::mission_tip_chest_info, {std::to_string(r.h2), std::to_string(r.h6)});
+}
+
+// The mission's points in `room` (spawners, starts, chests, emblems) put in the map's overlay, from the values
+// as they are now.
+void fill_overlay(App& app, const World& world, const ScriptPlaces& p, int room, MissionOverlay& mo) {
+    const auto lang = app.language;
+    mo.points.clear();
+    EnemyTable t;
+    const bool enemies = mission_enemies(&t);
+    for (std::size_t i = 0; i < p.spawners.size(); ++i) {
+        const auto& sp = p.spawners[i];
+        if (room_under(world, p.rooms, sp.at) == room)
             mo.points.push_back(
-                {sp.at, fmt(lang, S::mission_spawner_short, {std::to_string(sp.group)}), MissionPoint::spawner});
-        }
+                {sp.at, spawner_label(app, i + 1, sp.group, enemies ? &t : nullptr), MissionPoint::spawner});
     }
     for (const auto& st : p.starts) {
         if (st.marker.empty() && room_under(world, p.rooms, st.at) == room) {
@@ -237,10 +266,8 @@ void see_in_room(App& app, const World& world, const ScriptPlaces& p, int room) 
     }
     if (const auto* rows = chest_rows()) {
         for (std::size_t i = 0; i < rows->size(); ++i) {
-            if (room_under(world, p.rooms, (*rows)[i].at) == room) {
-                mo.points.push_back(
-                    {(*rows)[i].at, fmt(lang, S::mission_chest_short, {std::to_string(i)}), MissionPoint::chest});
-            }
+            if (room_under(world, p.rooms, (*rows)[i].at) == room)
+                mo.points.push_back({(*rows)[i].at, chest_label(app, i + 1, (*rows)[i]), MissionPoint::chest});
         }
     }
     if (const auto* rows = emblem_rows()) {
@@ -251,7 +278,16 @@ void see_in_room(App& app, const World& world, const ScriptPlaces& p, int room) 
             }
         }
     }
-    // the room shown on the right, the mission kept open under the catalog
+}
+
+// The room shown with every point of the mission in it, the mission kept open under the catalog.
+void see_in_room(App& app, const World& world, const ScriptPlaces& p, int room) {
+    MissionOverlay& mo = mission_overlay();
+    mo = MissionOverlay{};
+    mo.world = world.code;
+    mo.room = room;
+    mo.mission = v.item;
+    fill_overlay(app, world, p, room, mo);
     const std::string key = world_path(world.code) + "/room/" + std::to_string(room);
     for (std::size_t i = 0; i < app.catalog.items.size(); ++i) {
         if (app.catalog.items[i].kind == Kind::room && app.catalog.items[i].key == key) {
@@ -298,6 +334,26 @@ void room_button(App& app, const World& world, const ScriptPlaces& all, const st
     } else {
         ImGui::TextDisabled("%s", tr(app.language, S::mission_no_room));
     }
+}
+
+// "See spawner" / "See chest" beside a line's room button: its room shown (or kept) and the point ringed for a
+// few seconds; the camera stays where it is.
+void focus_button(App& app, const World& world, const ScriptPlaces& all, const std::array<std::int32_t, 3>& at,
+                  MissionPoint::Kind kind) {
+    const int room = world.code.empty() ? -1 : room_under(world, all.rooms, at);
+    if (room < 0)
+        return;
+    ImGui::SameLine();
+    if (ImGui::SmallButton(
+            tr(app.language, kind == MissionPoint::chest ? S::mission_see_chest : S::mission_see_spawner))) {
+        see_in_room(app, world, all, room);
+        MissionOverlay& mo = mission_overlay();
+        mo.focus = true;
+        mo.focus_at = at;
+        mo.focus_kind = kind;
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tr(app.language, S::mission_see_point_hint));
 }
 
 // Where a step is set, in a few words: "start · _i" (the start's entry, its script), "area 11 · e0".
@@ -504,6 +560,7 @@ void draw_enemies(App& app, const Placed& p, const World& world) {
         ImGui::TextDisabled("%s", where_text(app, ref).c_str());
         ImGui::SameLine();
         room_button(app, world, p.all, sp.at);
+        focus_button(app, world, p.all, sp.at, MissionPoint::spawner);
         ImGui::Indent();
         std::array<std::int32_t, 3> at = sp.at;
         if (edit_point("##at", &at)) {
@@ -635,6 +692,8 @@ void draw_placed(App& app, const Placed& p, const World& world, bool chests) {
             fmt(lang, chests ? S::mission_sum_chest : S::mission_sum_emblem, {std::to_string(i + 1)}).c_str());
         ImGui::SameLine();
         room_button(app, world, p.all, r.at);
+        if (chests)
+            focus_button(app, world, p.all, r.at, MissionPoint::chest);
         ImGui::Indent();
         changed |= edit_point("##at", &r.at);
         if (chests) {
@@ -691,6 +750,10 @@ void draw_summary(App& app) {
     const auto lang = app.language;
     const Placed p = placed();
     const World& world = mission_world(p.all.world);
+    // the map's points of this mission follow its values as they are changed
+    MissionOverlay& mo = mission_overlay();
+    if (mo.mission == v.item && mo.room >= 0 && mo.world == world.code)
+        fill_overlay(app, world, p.all, mo.room, mo);
     ImGui::BeginChild("##summary", ImVec2(0, 0));
     // where it happens
     ImGui::SeparatorText(tr(lang, S::mission_sum_where));
@@ -957,6 +1020,163 @@ MissionOverlay& mission_overlay() {
     return overlay;
 }
 
+namespace {
+
+// What the game says of a mission file: its record in the story's mission list (when it has one) and the
+// worlds its scripts load, with the words the catalog and the mission's header show.
+struct MissionInfo {
+    bool listed = false, story = false;
+    int number = 0, first_day = 0, last_day = 0;
+    std::string name;
+    std::vector<int> worlds;  // world_code's indices
+    std::string days;         // "Days 51-54", "Mission Mode", empty when not listed
+    std::string worlds_text;  // "Twilight Town", "4 worlds", empty when none
+    std::string worlds_all;   // every world's name: "Wonderland, Halloween Town, ..."
+    std::string label;        // the catalog's: days · name · world
+};
+
+const char* const kLanguageCodes[] = {"en", "fr", "de", "it", "es"};
+
+// Every mission file's info in the interface's language: the list and the worlds' names read once per
+// language (English when that language's cannot be read), the worlds the scripts load once (the game's own
+// files; about 0.2 s for all of them).
+const std::map<int, MissionInfo>& mission_infos(const App& app) {
+    static int made_for = -1;
+    static std::map<int, MissionInfo> infos;
+    static std::map<int, std::vector<int>> worlds;
+    static bool worlds_read = false;
+    const auto lang = app.language;
+    if (made_for == static_cast<int>(lang))
+        return infos;
+    made_for = static_cast<int>(lang);
+    infos.clear();
+    if (!worlds_read) {
+        worlds_read = true;
+        for (const int number : mission_numbers(nitrofs())) {
+            MissionFile mf;
+            if (load_mission(nitrofs(), number, &mf, nullptr))
+                worlds[number] = mission_worlds(mf);
+        }
+    }
+    const std::string code = kLanguageCodes[static_cast<std::size_t>(lang)];
+    std::vector<MissionListEntry> list;
+    if (!load_mission_list(nitrofs(), code, &list, nullptr))
+        load_mission_list(nitrofs(), "en", &list, nullptr);
+    std::vector<std::string> world_names;
+    if (!load_world_names(nitrofs(), code, &world_names, nullptr))
+        load_world_names(nitrofs(), "en", &world_names, nullptr);
+    const auto world_name = [&](int index) -> std::string {
+        if (index >= 0 && static_cast<std::size_t>(index) < world_names.size())
+            return world_names[static_cast<std::size_t>(index)];
+        const char* c = world_code(index);
+        return c != nullptr ? c : "?";
+    };
+    for (const auto& [number, its_worlds] : worlds) {
+        MissionInfo& in = infos[number];
+        in.worlds = its_worlds;
+        for (const int w : its_worlds)
+            in.worlds_all += (in.worlds_all.empty() ? "" : ", ") + world_name(w);
+        in.worlds_text = its_worlds.size() > 1 ? fmt(lang, S::mission_tree_worlds, {std::to_string(its_worlds.size())})
+                                               : in.worlds_all;
+    }
+    std::map<int, std::vector<const MissionListEntry*>> by_file;
+    for (const auto& e : list)
+        by_file[e.file].push_back(&e);
+    constexpr int kStoryDays = 10000, kMissionModeDay = 400;
+    const auto days = [&](int first, int last) {
+        return first == last ? fmt(lang, S::mission_tree_day, {std::to_string(first)})
+                             : fmt(lang, S::mission_tree_days, {std::to_string(first), std::to_string(last)});
+    };
+    for (const auto& [file, records] : by_file) {
+        MissionInfo& in = infos[file];
+        const MissionListEntry& e = *records.front();  // the first record, as the game lists it
+        in.listed = true;
+        in.number = e.number;
+        in.first_day = e.first_day;
+        in.last_day = e.last_day;
+        if (file >= kStoryDays) {
+            in.story = true;
+            for (const auto* r : records) {
+                in.first_day = std::min(in.first_day, r->first_day);
+                in.last_day = std::max(in.last_day, r->last_day);
+            }
+            in.name = tr(lang, S::mission_tree_story);
+            in.days = days(in.first_day, in.last_day);
+        } else if (e.first_day >= kMissionModeDay) {
+            in.name = e.name;
+            in.days = tr(lang, S::mission_tree_mode);
+        } else {
+            in.name = e.name;
+            in.days = days(e.first_day, e.last_day);
+        }
+    }
+    for (auto& [number, in] : infos) {
+        for (const std::string* part : {&in.days, &in.name, &in.worlds_text}) {
+            if (!part->empty())
+                in.label += (in.label.empty() ? "" : " · ") + *part;
+        }
+    }
+    return infos;
+}
+
+const MissionInfo* mission_info(const App& app, int number) {
+    const auto& infos = mission_infos(app);
+    const auto found = infos.find(number);
+    return found != infos.end() ? &found->second : nullptr;
+}
+
+int number_of(const Item& item) {
+    const auto slash = item.key.find_last_of('/');
+    return std::atoi(item.key.c_str() + (slash == std::string::npos ? 0 : slash + 1));
+}
+
+// Over the mission's view: its number and name, then its days, its worlds and how many spawners, chests and
+// emblems it has now (the edit's, so they follow what is changed).
+void draw_header(App& app) {
+    const auto lang = app.language;
+    const MissionInfo* in = mission_info(app, v.edit.number);
+    const ImVec4 title_colour = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
+    if (in != nullptr && in->listed && !in->story) {
+        ImGui::TextColored(title_colour, "%s",
+                           fmt(lang, S::mission_head_title, {std::to_string(in->number), in->name}).c_str());
+    } else if (in != nullptr && in->story) {
+        ImGui::TextColored(title_colour, "%s", in->name.c_str());
+    } else {
+        ImGui::TextColored(title_colour, "%s", tr(lang, S::mission_head_unlisted));
+    }
+    std::string line;
+    const auto add = [&](const std::string& part) {
+        if (!part.empty())
+            line += (line.empty() ? "" : " · ") + part;
+    };
+    if (in != nullptr) {
+        add(in->days);
+        std::string where = in->worlds_all;
+        if (in->worlds.size() == 1 && world_code(in->worlds[0]) != nullptr)
+            where += std::string(" (") + world_code(in->worlds[0]) + ")";
+        add(where);
+    }
+    const Placed p = placed();
+    const auto* chests = chest_rows();
+    const auto* emblems = emblem_rows();
+    add(fmt(lang, S::mission_head_counts,
+            {std::to_string(p.spawners.size()), std::to_string(chests != nullptr ? chests->size() : 0),
+             std::to_string(emblems != nullptr ? emblems->size() : 0)}));
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(line.c_str());
+    ImGui::PopTextWrapPos();
+}
+
+}  // namespace
+
+const std::string& mission_list_label(const App& app, const Item& item) {
+    static const std::string none;
+    if (item.kind != Kind::mission)
+        return none;
+    const MissionInfo* in = mission_info(app, number_of(item));
+    return in != nullptr ? in->label : none;
+}
+
 void draw_mission_view(App& app, const Item& item) {
     const Mod* m = app.current_mod();
     const std::string mod_name = m != nullptr ? m->name : std::string();
@@ -968,10 +1188,12 @@ void draw_mission_view(App& app, const Item& item) {
         ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1), "%s", v.error.c_str());
         return;
     }
-    ImGui::TextUnformatted(fmt(lang, S::mission_header,
-                               {mission_path(v.edit.number), std::to_string(v.edit.mission.entries.size()),
-                                std::to_string(v.scripts), std::to_string(v.steps)})
-                               .c_str());
+    draw_header(app);
+    ImGui::Separator();
+    ImGui::TextDisabled("%s", fmt(lang, S::mission_header,
+                                  {mission_path(v.edit.number), std::to_string(v.edit.mission.entries.size()),
+                                   std::to_string(v.scripts), std::to_string(v.steps)})
+                                  .c_str());
     // whose version is shown, and saving it
     const bool from_mod = v.edit.mission_from_mod;
     ImGui::TextUnformatted(from_mod ? fmt(lang, S::mission_from_mod, {mod_name}).c_str()
