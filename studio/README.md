@@ -347,14 +347,50 @@ settings.
    folded into "Map editor" above the mission (opened, a line between the two
    sets their heights). Picking anything in the catalog lets the mission go;
    picking the mission shows it on the right again, its unsaved changes kept.
-   Spawners and chests also have "See spawner" / "See chest": the room
-   opens (or stays, the camera where it is) and a faint ring marks the point
-   for five seconds -- or, when it is out of view, an arrow at the picture's
-   edge points the way to it.
+   Spawners, chests and emblems also have "See spawner" / "See chest" /
+   "See emblem": the room opens (or stays, the camera where it is) and a
+   faint ring marks the point for five seconds -- or, when it is out of view,
+   an arrow at the picture's edge points the way to it.
    Over the map, a spawner's tooltip says its number, its group and the
    group's enemies with how many of each (every point under the pointer when
-   several share a place), a chest's its number, contents key and facing;
-   the points follow the mission's values as they are changed.
+   several share a place), a chest's its number, contents key and facing, an
+   emblem's its number and kind (the byte the game hands over when it places
+   it; what each kind is has not been worked out); the points follow the
+   mission's values as they are changed. Chests and players' starts show the
+   way they face as a line.
+
+   Each part of the summary (Where, the texts, the players' starts, the
+   time, Enemies, Chests, Emblems, the objective) folds under its header,
+   and Enemies' Spawners and Enemies put one by one fold on their own; a
+   part opens again when a point of it is picked on the map. Chests' and
+   players' starts' facing lines are drawn half a turn from their number, as
+   the game turns them (0 faces -z), and their ring handle turns them the
+   same way.
+
+   **Moving what is picked.** Clicking a room marker, an exit's model or --
+   while a mission is open beside the room -- one of its spawners, chests,
+   emblems or players' starts picks it: a row under the tools over the
+   picture shows its name and its place (and facing, when it has one) as
+   click-drag fields (drag them, or double-click and type), the same values
+   as the left panel's, both following each other as they change; "To
+   ground" sets it on the floor under it. It also gets its own handles in the
+   picture as soon as it is picked (apart from the shapes' Move / Resize /
+   Turn): an arrow along each axis, a square to move it over the ground, and
+   a ring to turn it when it faces a way (markers, chests, players' starts);
+   Ctrl snaps, a right click while dragging puts it back, and each drag is
+   one step to undo. Picking a room marker or an exit's
+   model when the room has no change starts a markers-only one, so it can be
+   moved at once. A picked mission point is lit (and scrolled to) in the
+   mission's summary. Ctrl+Z / Ctrl+Y (or Undo / Redo) go back through the
+   room's changes and the mission's points' moves in the order they were
+   made; with the mission shown alone they undo its points only.
+
+   In the catalog, mi/wd says "Worlds" and each world's folder its name (the
+   game's own, in the interface's language: "wd_tt - Twilight Town"); a room
+   made from a KH2 map that was compared with it (studio/data/kh2_rooms.txt,
+   "seen alike") has that map's KH2 name and number beside it ("MAP 0 - The
+   Usual Spot (KH2 Map tt02)", the names from OpenKH's list of KH2's places);
+   the others are left unnamed. Searching finds rooms by those names too.
 
    In the catalog each mission file has its day (or days), name and world
    beside it: the day and name from the story's mission list in the

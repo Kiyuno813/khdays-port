@@ -162,6 +162,9 @@ struct MissionPoint {
     std::array<std::int32_t, 3> at{};             // 20.12
     std::string label;
     Kind kind = spawner;
+    int index = -1;           // its row in the mission's list of its kind (the summary's order, from 0)
+    bool has_facing = false;  // a chest and a player's start face a way (degrees)
+    int facing = 0;
 };
 struct MissionOverlay {
     std::string world;  // tt, aw ...
@@ -172,11 +175,47 @@ struct MissionOverlay {
     bool focus = false;
     std::array<std::int32_t, 3> focus_at{};
     MissionPoint::Kind focus_kind = MissionPoint::spawner;
+    // the point picked in the map (its row lit in the mission's summary, scrolled to once when `scroll`)
+    int picked_kind = -1, picked_index = -1;
+    bool scroll = false;
 };
 MissionOverlay& mission_overlay();
+
+// One point of the mission open beside the room (App::mission_beside), read and moved from the map: its place,
+// its facing when it has one, and its name ("Spawner 3 · group 1"). False when there is no such point.
+struct MissionPointPlace {
+    std::array<std::int32_t, 3> at{};
+    bool has_facing = false;
+    int facing = 0;  // degrees
+    std::string name;
+};
+bool mission_point(const App& app, MissionPoint::Kind kind, int index, MissionPointPlace* out);
+void mission_point_move(App& app, MissionPoint::Kind kind, int index, const std::array<std::int32_t, 3>& at,
+                        int facing);
+// Undo of the mission's points: the point as it is kept before a change (push), taken back when nothing changed
+// (unpush), and one step undone or redone (false when there was none).
+void mission_point_push(const App& app, MissionPoint::Kind kind, int index);
+void mission_point_unpush();
+bool mission_point_undo(App& app, bool redo);
+
+// One history of the steps Undo and Redo go through, whoever made them: the room's change (markers, exits'
+// models, hand edits) and the mission's points. Each owner keeps its own steps; this keeps their order.
+enum class EditOwner { room, mission };
+void history_push(EditOwner owner);
+void history_unpush(EditOwner owner);
+void history_clear(EditOwner owner);  // its steps dropped (what they were of is gone)
+bool history_can(bool redo);
+// The last step undone (or redone); with `room_shown` false the room's steps are left for later.
+void history_step(App& app, bool redo, bool room_shown);
 // What the catalog says beside a mission file: its day or days and its name, from the story's mission list
 // in the interface's language ("Days 51-54 · Eliminate the Tailbunker"); empty when the list has none.
 const std::string& mission_list_label(const App& app, const Item& item);
+// What the catalog says beside a room: the name of the KH2 map it was made from and that map
+// ("The Usual Spot (KH2 Map tt02)"), only for rooms compared with it (studio/data/kh2_rooms.txt, the mod's
+// own pairs too); empty for the others.
+const std::string& room_list_label(const App& app, const Item& item);
+// What the catalog says beside a folder of mi/wd: "Worlds" for wd, the game's name of the world for wd_tt.
+std::string world_folder_label(const App& app, const std::string& folder);
 void draw_map_view(App& app, const Item& item);
 // A room's controls (replacing it, editing its collision, what is picked, its lists), drawn in the left
 // panel under the catalog while a room is shown.

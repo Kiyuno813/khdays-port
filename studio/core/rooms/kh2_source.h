@@ -91,4 +91,12 @@ std::vector<Kh2Pair> kh2_pairs(const std::filesystem::path& mod_dir, std::vector
 // The pair of Days room `room` of world `world`, or null.
 const Kh2Pair* kh2_pair_of(const std::vector<Kh2Pair>& pairs, const std::string& world, int room);
 
+// The name KH2 gives map `map` (tt02: "The Usual Spot"), from its place list (OpenKH's worlds page, read from
+// KH2's 00place/place.bin), or null: only the six worlds' maps a Days room is made from (kKh2Worlds).
+const char* kh2_place_name(const std::string& map);
+
+// Whether a pair's evidence says the room and the map were compared (its picture or its floor seen alike),
+// not only named alike.
+bool kh2_pair_seen_alike(const Kh2Pair& pair);
+
 }  // namespace studio

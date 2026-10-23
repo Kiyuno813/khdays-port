@@ -132,9 +132,12 @@ struct MapView {
     struct MarkerEdit {
         std::string name;
         bool held = false;
+        int held_frame = -10;  // the last frame either of its fields (the panel's, the bar's) was held
         float at[3] = {0, 0, 0};
         float facing = 0;
     } marker_edit;
+    // a mission's point picked in the picture (the mission open beside the room): its kind and its row
+    int picked_point_kind = -1, picked_point = -1;
     // the collision editor: picking in the picture selects faces (as shown) and shapes
     bool editing = false;
     std::set<FaceKey> selected;
@@ -155,6 +158,17 @@ struct MapView {
     ImVec2 gizmo_from{0, 0}, gizmo_last{0, 0}, gizmo_centre{0, 0};
     ImVec2 gizmo_pu[2]{};
     float gizmo_turned = 0, gizmo_sign = 1;
+    // the picked marker's, exit model's or mission point's handles (shown on click, apart from the shapes'
+    // modes): which handle is dragged (0-2 an axis, 3 over the ground, 20 the facing ring), what it moves
+    // (0 a room marker, 1 an exit's model, 2 a mission point) and where it was when the drag began
+    int point_drag = -1, point_what = -1;
+    ImVec2 point_from{0, 0}, point_last{0, 0}, point_centre{0, 0};
+    ImVec2 point_pu[2]{};
+    float point_turned = 0, point_sign = 1;
+    std::array<float, 3> point_start{};
+    float point_start_facing = 0;
+    bool point_gate_had = false;  // an exit's model: whether the change moved it before the drag
+    std::array<std::int32_t, 3> point_gate_was{};
 };
 
 MapView m;
@@ -334,6 +348,7 @@ void frame_camera() {
 }
 
 void open(App& app) {
+    history_clear(EditOwner::room);  // the steps were of the room shown before
     const Item& item = app.catalog.items[static_cast<std::size_t>(app.selected)];
     MapView fresh;
     fresh.item = app.selected;
@@ -640,6 +655,7 @@ std::array<float, 3> skinned(const std::map<std::uint32_t, Mat>& moved, const as
 void edit_push();
 void edit_unpush();
 void undo_field();
+void start_kept_change();
 void draw_convert_buttons(App& app);
 void edits_changed();
 
@@ -907,20 +923,41 @@ void draw_room(App& app, ImVec2 size) {
     // a mission's points in this room: spawners green, the players' starts blue, chests gold, emblems
     // pink, labels on hover
     const MissionOverlay& mo = mission_overlay();
+    // its points can be picked (and moved) while that mission is open beside the room
+    const bool points_pickable = app.mission_beside >= 0 && mo.mission == app.mission_beside;
+    int near_point = -1;  // in mo.points
     if (mo.world == m.world.code && mo.room == m.room->index) {
         static const ImU32 kPointColours[] = {IM_COL32(80, 255, 120, 255), IM_COL32(90, 170, 255, 255),
                                               IM_COL32(255, 200, 60, 255), IM_COL32(255, 110, 210, 255)};
         std::string tip;
-        for (const auto& pt : mo.points) {
+        for (std::size_t k = 0; k < mo.points.size(); ++k) {
+            const auto& pt = mo.points[k];
+            const std::array<float, 3> q{static_cast<float>(pt.at[0]) * kFx, static_cast<float>(pt.at[1]) * kFx,
+                                         static_cast<float>(pt.at[2]) * kFx};
             float x, y;
-            if (!project({static_cast<float>(pt.at[0]) * kFx, static_cast<float>(pt.at[1]) * kFx,
-                          static_cast<float>(pt.at[2]) * kFx},
-                         &x, &y))
+            if (!project(q, &x, &y))
                 continue;
-            list->AddCircle(ImVec2(x, y), 7.0f, kPointColours[pt.kind], 0, 2.5f);
+            // the way it faces (chests, players' starts): a line, as the markers have. Their number turns them
+            // half a turn from the markers' (0 faces -z in the game), so it is drawn half a turn round
+            if (pt.has_facing) {
+                const float turn = static_cast<float>(pt.facing + 180) * 0.0174532925f;
+                float fx, fy;
+                if (project({q[0] + std::sin(turn), q[1], q[2] + std::cos(turn)}, &fx, &fy))
+                    list->AddLine(ImVec2(x, y), ImVec2(fx, fy), (kPointColours[pt.kind] & 0x00ffffffu) | 0xdc000000u,
+                                  2.0f);
+            }
+            const bool picked = m.picked_point_kind == static_cast<int>(pt.kind) && m.picked_point == pt.index;
+            list->AddCircle(ImVec2(x, y), picked ? 9.0f : 7.0f, kPointColours[pt.kind], 0, 2.5f);
+            if (picked)
+                list->AddCircleFilled(ImVec2(x, y), 4.0f, IM_COL32(255, 255, 255, 255));
+            const float d = std::hypot(x - mouse.x, y - mouse.y);
             // every point under the pointer (spawners often share a place), one after another
-            if (hovered && std::hypot(x - mouse.x, y - mouse.y) < 9.0f)
+            if (hovered && d < 9.0f)
                 tip += (tip.empty() ? "" : "\n\n") + pt.label;
+            if (points_pickable && hovered && d < best) {
+                best = d, near_marker = -1;
+                near_point = static_cast<int>(k);
+            }
         }
         if (!tip.empty())
             ImGui::SetTooltip("%s", tip.c_str());
@@ -1007,7 +1044,7 @@ void draw_room(App& app, ImVec2 size) {
                                         picked ? IM_COL32(255, 255, 255, 255) : IM_COL32(255, 210, 40, 230));
                     const float d = std::hypot(x - mouse.x, y - mouse.y);
                     if (hovered && d < best) {
-                        best = d, near_marker = -1;
+                        best = d, near_marker = -1, near_point = -1;
                         near_gate = true, near_gate_key = g.key, near_gate_part = static_cast<int>(part);
                     }
                 }
@@ -1329,7 +1366,318 @@ void draw_room(App& app, ImVec2 size) {
                           IM_COL32(240, 240, 240, 230), label.c_str());
         }
     }
-    const bool gizmo_owns = gizmo_used || gizmo_hover >= 0;
+    // the picked room marker's, exit model's or mission point's handles: an arrow along each axis, a square to
+    // move it over the ground, and a ring to turn it when it faces a way. Shown as soon as it is picked (the
+    // shapes' Move / Resize / Turn do not apply); Ctrl snaps (a quarter unit, 15 degrees), a right click while
+    // dragging puts it back. Each drag is one step to undo.
+    int point_hover = -1;
+    bool point_used = false;
+    {
+        using V = std::array<float, 3>;
+        const ImGuiIO& io = ImGui::GetIO();
+        Replacing& rp = m.rep;
+        // what is picked and movable, where it is now and the way it faces
+        int what = -1;
+        V now_at{};
+        bool has_facing = false;
+        float now_facing = 0;
+        const Marker* picked_mk = nullptr;
+        const GateModelPart* gate_part = nullptr;
+        MissionPointPlace pp;
+        const auto point_kind = static_cast<MissionPoint::Kind>(m.picked_point_kind);
+        if (m.picked_point_kind >= 0 && m.picked_point >= 0) {
+            if (points_pickable && mission_point(app, point_kind, m.picked_point, &pp)) {
+                what = 2;
+                now_at = {static_cast<float>(pp.at[0]) * kFx, static_cast<float>(pp.at[1]) * kFx,
+                          static_cast<float>(pp.at[2]) * kFx};
+                has_facing = pp.has_facing;
+                now_facing = static_cast<float>(pp.facing) + 180.0f;  // the way it faces (see the points' lines)
+            }
+        } else if (m.picked_gate && rp.active) {
+            for (const auto& g : m.world.gate_models) {
+                if (g.key == m.picked_gate_key && m.picked_gate_part >= 0 && m.picked_gate_part < 5)
+                    gate_part = &g.parts[static_cast<std::size_t>(m.picked_gate_part)];
+            }
+            if (gate_part != nullptr) {
+                what = 1;
+                const auto moved = rp.r.gate_points.find({m.picked_gate_key, m.picked_gate_part});
+                const auto p3 = moved != rp.r.gate_points.end() ? moved->second : gate_part->position;
+                now_at = {static_cast<float>(p3[0]) * kFx, static_cast<float>(p3[1]) * kFx,
+                          static_cast<float>(p3[2]) * kFx};
+            }
+        } else if (m.picked_marker >= 0 && showing_built() &&
+                   m.picked_marker < static_cast<int>(shown_markers.size())) {
+            what = 0;
+            picked_mk = &shown_markers[static_cast<std::size_t>(m.picked_marker)];
+            now_at = {static_cast<float>(picked_mk->place[0]) * kFx, static_cast<float>(picked_mk->place[1]) * kFx,
+                      static_cast<float>(picked_mk->place[2]) * kFx};
+            has_facing = true;
+            now_facing = static_cast<float>(picked_mk->extra) * 360.0f / 65536.0f;
+        }
+        if (what < 0 || (m.point_drag >= 0 && what != m.point_what))
+            m.point_drag = -1;  // nothing movable picked (or another thing): no drag goes on
+        const auto wrap = [](float deg) {
+            deg = std::fmod(deg, 360.0f);
+            return deg < 0 ? deg + 360.0f : deg;
+        };
+        // it put at `to` facing `facing`: drawn there at once; `done` (let go) writes a room marker to the change
+        const auto put = [&](const V& to, float facing, bool done) {
+            const std::array<std::int32_t, 3> fixed{static_cast<std::int32_t>(std::lround(to[0] * 4096.0)),
+                                                    static_cast<std::int32_t>(std::lround(to[1] * 4096.0)),
+                                                    static_cast<std::int32_t>(std::lround(to[2] * 4096.0))};
+            if (what == 2) {
+                mission_point_move(app, point_kind, m.picked_point, fixed,
+                                   static_cast<int>(std::lround(wrap(facing - 180.0f))));
+            } else if (what == 1) {
+                rp.r.gate_points[{m.picked_gate_key, m.picked_gate_part}] = fixed;
+            } else if (what == 0 && picked_mk != nullptr) {
+                auto& e = m.marker_edit;
+                e.name = picked_mk->name;
+                for (std::size_t a = 0; a < 3; ++a)
+                    e.at[a] = to[a];
+                e.facing = wrap(facing);
+                e.held = true;
+                e.held_frame = ImGui::GetFrameCount();  // its fields and the picture show it here
+                if (done) {
+                    rp.r.markers[picked_mk->name] = {
+                        fixed[0], fixed[1], fixed[2],
+                        static_cast<std::int32_t>(std::lround(wrap(facing) * 65536.0f / 360.0f))};
+                    rp.dirty = true;
+                }
+            }
+        };
+        const auto keep = [&]() {  // the step to undo, as the drag begins
+            if (what == 2)
+                mission_point_push(app, point_kind, m.picked_point);
+            else
+                edit_push();
+        };
+        const auto unkeep = [&]() {  // no step left (put back, or not moved)
+            if (what == 2)
+                mission_point_unpush();
+            else
+                edit_unpush();
+        };
+        if (what >= 0) {
+            auto plus = [](const V& a, const V& b, float k) {
+                return V{a[0] + b[0] * k, a[1] + b[1] * k, a[2] + b[2] * k};
+            };
+            auto screen = [&](const V& q, ImVec2* o) {
+                float x, y;
+                if (!project(q, &x, &y))
+                    return false;
+                *o = ImVec2(x, y);
+                return true;
+            };
+            auto per_unit = [&](const V& from, const V& dir, ImVec2* o) {
+                ImVec2 a, b;
+                if (!screen(from, &a) || !screen(plus(from, dir, 1.0f), &b))
+                    return false;
+                *o = ImVec2(b.x - a.x, b.y - a.y);
+                return true;
+            };
+            auto seg_dist = [](ImVec2 p, ImVec2 a, ImVec2 b) {
+                const float dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+                const float u = l2 > 0 ? std::clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / l2, 0.0f, 1.0f) : 0.0f;
+                return std::hypot(p.x - (a.x + u * dx), p.y - (a.y + u * dy));
+            };
+            const V axes[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+            const ImU32 axis_colour[3] = {IM_COL32(235, 85, 85, 255), IM_COL32(120, 215, 95, 255),
+                                          IM_COL32(85, 145, 245, 255)};
+            const ImU32 hot = IM_COL32(255, 245, 170, 255);
+            const float k = ImGui::GetStyle().FontScaleDpi > 0 ? ImGui::GetStyle().FontScaleDpi : 1.0f;
+            ImVec2 c2;
+            const bool seen = screen(now_at, &c2);
+            float px_per_unit = 0;
+            for (const auto& ax : axes) {
+                ImVec2 pu;
+                if (per_unit(now_at, ax, &pu))
+                    px_per_unit = std::max(px_per_unit, std::hypot(pu.x, pu.y));
+            }
+            struct Handle {
+                int id;
+                ImVec2 a, b;
+                bool arrow;
+                ImU32 colour;
+            };
+            std::vector<Handle> handles;
+            std::vector<ImVec2> ring;
+            if (seen && px_per_unit > 1e-4f) {
+                const float reach = 60.0f * k / px_per_unit;  // the arrows' length, in units (the same on screen)
+                for (int i = 0; i < 3; ++i) {
+                    ImVec2 tip;
+                    if (screen(plus(now_at, axes[i], reach), &tip) && std::hypot(tip.x - c2.x, tip.y - c2.y) > 12.0f * k)
+                        handles.push_back({i, c2, tip, true, axis_colour[i]});
+                }
+                handles.push_back({3, c2, c2, false, IM_COL32(240, 240, 240, 255)});
+                if (has_facing) {
+                    const float radius = 40.0f * k / px_per_unit;
+                    for (int n = 0; n <= 48; ++n) {
+                        const float a = static_cast<float>(n) / 48.0f * 6.2831853f;
+                        ImVec2 q;
+                        if (screen(V{now_at[0] + std::sin(a) * radius, now_at[1], now_at[2] + std::cos(a) * radius}, &q))
+                            ring.push_back(q);
+                    }
+                }
+            }
+            if (hovered && m.point_drag < 0 && m.gizmo_drag < 0 && gizmo_hover < 0 && !m.box_on) {
+                float best_px = 8.0f * k;
+                for (const auto& hd : handles) {
+                    const float d =
+                        hd.arrow ? seg_dist(mouse, hd.a, hd.b) : std::hypot(mouse.x - hd.b.x, mouse.y - hd.b.y);
+                    if (d < best_px)
+                        best_px = d, point_hover = hd.id;
+                }
+                for (std::size_t n = 1; n < ring.size(); ++n) {
+                    const float d = seg_dist(mouse, ring[n - 1], ring[n]);
+                    if (d < best_px)
+                        best_px = d, point_hover = 20;
+                }
+            }
+            // a drag begins: where it was, and how the handle moves on the screen
+            if (point_hover >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !io.KeyShift) {
+                bool ok = true;
+                if (point_hover <= 2) {
+                    ok = per_unit(now_at, axes[point_hover], &m.point_pu[0]);
+                } else if (point_hover == 3) {
+                    ok = per_unit(now_at, axes[0], &m.point_pu[0]) && per_unit(now_at, axes[2], &m.point_pu[1]);
+                } else {
+                    // which way the ring turns on the screen: +facing goes from +z towards +x
+                    ImVec2 a, b;
+                    ok = screen(plus(now_at, axes[2], 1.0f), &a) && screen(plus(now_at, axes[0], 1.0f), &b);
+                    m.point_centre = c2;
+                    m.point_sign = (a.x - c2.x) * (b.y - c2.y) - (a.y - c2.y) * (b.x - c2.x) > 0 ? 1.0f : -1.0f;
+                }
+                if (ok) {
+                    keep();
+                    m.point_drag = point_hover;
+                    m.point_what = what;
+                    m.point_from = m.point_last = mouse;
+                    m.point_turned = 0;
+                    m.point_start = now_at;
+                    m.point_start_facing = now_facing;
+                    if (what == 1) {
+                        const auto moved = rp.r.gate_points.find({m.picked_gate_key, m.picked_gate_part});
+                        m.point_gate_had = moved != rp.r.gate_points.end();
+                        if (m.point_gate_had)
+                            m.point_gate_was = moved->second;
+                    }
+                }
+            }
+            // a right click while dragging: back where it was, nothing kept to undo
+            if (m.point_drag >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                if (what == 1) {
+                    if (m.point_gate_had)
+                        rp.r.gate_points[{m.picked_gate_key, m.picked_gate_part}] = m.point_gate_was;
+                    else
+                        rp.r.gate_points.erase({m.picked_gate_key, m.picked_gate_part});
+                } else if (what == 2) {
+                    put(m.point_start, m.point_start_facing, false);
+                } else {
+                    m.marker_edit.held = false;  // its fields and the picture take the room's place again
+                    m.marker_edit.held_frame = -10;
+                }
+                unkeep();
+                m.point_drag = -1;
+                point_used = true;
+            }
+            if (m.point_drag >= 0) {
+                point_used = true;
+                const ImVec2 total(mouse.x - m.point_from.x, mouse.y - m.point_from.y);
+                const bool snap = io.KeyCtrl;
+                auto snapped = [&](float v, float step) { return snap ? std::round(v / step) * step : v; };
+                auto along = [&](ImVec2 pu) {
+                    const float l2 = pu.x * pu.x + pu.y * pu.y;
+                    return l2 > 1e-8f ? (total.x * pu.x + total.y * pu.y) / l2 : 0.0f;
+                };
+                V to = m.point_start;
+                float facing = m.point_start_facing;
+                const int id = m.point_drag;
+                if (id <= 2) {
+                    to[static_cast<std::size_t>(id)] =
+                        snapped(m.point_start[static_cast<std::size_t>(id)] + along(m.point_pu[0]), 0.25f);
+                } else if (id == 3) {
+                    const ImVec2 sx = m.point_pu[0], sz = m.point_pu[1];
+                    const float det = sx.x * sz.y - sx.y * sz.x;
+                    if (std::abs(det) > 1e-6f) {
+                        to[0] = snapped(m.point_start[0] + (total.x * sz.y - total.y * sz.x) / det, 0.25f);
+                        to[2] = snapped(m.point_start[2] + (sx.x * total.y - sx.y * total.x) / det, 0.25f);
+                    }
+                } else {
+                    const float a0 = std::atan2(m.point_last.y - m.point_centre.y, m.point_last.x - m.point_centre.x);
+                    const float a1 = std::atan2(mouse.y - m.point_centre.y, mouse.x - m.point_centre.x);
+                    float d = a1 - a0;
+                    while (d > 3.14159265f)
+                        d -= 6.2831853f;
+                    while (d < -3.14159265f)
+                        d += 6.2831853f;
+                    m.point_turned += d;
+                    m.point_last = mouse;
+                    facing = wrap(snapped(m.point_start_facing + m.point_sign * m.point_turned * 57.2957795f, 15.0f));
+                }
+                const bool moved = to != m.point_start || facing != m.point_start_facing;
+                if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                    if (moved || what == 0)
+                        put(to, facing, false);
+                } else {
+                    // let go: kept (a room marker written to the change), or not moved and no step left
+                    m.point_drag = -1;
+                    if (moved) {
+                        put(to, facing, true);
+                    } else {
+                        if (what == 0) {
+                            m.marker_edit.held = false;
+                            m.marker_edit.held_frame = -10;
+                        }
+                        unkeep();
+                    }
+                }
+                now_at = to;
+                now_facing = facing;
+                screen(now_at, &c2);
+            }
+            // drawn over everything, the one pointed at or dragged lit (moved with it while dragged)
+            const int lit = m.point_drag >= 0 ? m.point_drag : point_hover;
+            if (m.point_drag >= 0 && seen && !handles.empty()) {
+                const ImVec2 shift(c2.x - handles.back().b.x, c2.y - handles.back().b.y);
+                for (auto& hd : handles)
+                    hd.a = ImVec2(hd.a.x + shift.x, hd.a.y + shift.y), hd.b = ImVec2(hd.b.x + shift.x, hd.b.y + shift.y);
+                for (auto& q : ring)
+                    q = ImVec2(q.x + shift.x, q.y + shift.y);
+            }
+            for (const auto& hd : handles) {
+                const ImU32 col = hd.id == lit ? hot : hd.colour;
+                if (hd.arrow) {
+                    list->AddLine(hd.a, hd.b, col, 3.0f * k);
+                    const float dx = hd.b.x - hd.a.x, dy = hd.b.y - hd.a.y, l = std::max(1.0f, std::hypot(dx, dy));
+                    const float ux = dx / l, uy = dy / l, s = 9.0f * k;
+                    list->AddTriangleFilled(ImVec2(hd.b.x + ux * s, hd.b.y + uy * s),
+                                            ImVec2(hd.b.x - uy * s * 0.6f, hd.b.y + ux * s * 0.6f),
+                                            ImVec2(hd.b.x + uy * s * 0.6f, hd.b.y - ux * s * 0.6f), col);
+                } else {
+                    const float s = 6.0f * k;
+                    list->AddRectFilled(ImVec2(hd.b.x - s, hd.b.y - s), ImVec2(hd.b.x + s, hd.b.y + s), col);
+                    list->AddRect(ImVec2(hd.b.x - s, hd.b.y - s), ImVec2(hd.b.x + s, hd.b.y + s),
+                                  IM_COL32(20, 20, 30, 255));
+                }
+            }
+            if (ring.size() > 1) {
+                list->AddPolyline(ring.data(), static_cast<int>(ring.size()), lit == 20 ? hot : axis_colour[1], 0,
+                                  (lit == 20 ? 3.5f : 2.5f) * k);
+                // the way it faces, out to the ring
+                const float turn = now_facing * 0.0174532925f, radius = 40.0f * k / px_per_unit;
+                ImVec2 f2;
+                if (screen(V{now_at[0] + std::sin(turn) * radius, now_at[1], now_at[2] + std::cos(turn) * radius}, &f2))
+                    list->AddLine(c2, f2, lit == 20 ? hot : IM_COL32(240, 240, 240, 220), 2.0f * k);
+            }
+            if (!handles.empty()) {
+                const char* hint = tr(app.language, S::map_point_handles_keys);
+                list->AddText(ImVec2(at.x + 8.0f, at.y + static_cast<float>(h) - ImGui::GetFontSize() - 6.0f),
+                              IM_COL32(240, 240, 240, 230), hint);
+            }
+        }
+    }
+    const bool gizmo_owns = gizmo_used || gizmo_hover >= 0 || point_used || point_hover >= 0;
     // Shift+drag in the collision editor: the faces facing the viewer wholly inside the box selected
     bool boxed = false;
     if (editing_view && hovered && !gizmo_owns && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
@@ -1445,9 +1793,23 @@ void draw_room(App& app, ImVec2 size) {
         m.picked_marker = near_marker;
         m.picked_list = m.picked_face = -1;
         m.picked_gate = near_gate;
+        if (near_marker >= 0 || near_gate || near_point >= 0)
+            m.picked_shape = -1;  // one thing's handles at a time
         m.picked_gate_key = near_gate_key;
         m.picked_gate_part = near_gate_part;
-        if (near_marker < 0 && !near_gate)
+        MissionOverlay& picked_mo = mission_overlay();
+        if (near_point >= 0 && static_cast<std::size_t>(near_point) < mo.points.size()) {
+            const MissionPoint& pt = mo.points[static_cast<std::size_t>(near_point)];
+            m.picked_point_kind = static_cast<int>(pt.kind);
+            m.picked_point = pt.index;
+            picked_mo.picked_kind = m.picked_point_kind;
+            picked_mo.picked_index = m.picked_point;
+            picked_mo.scroll = true;  // its row shown in the mission's summary
+        } else {
+            m.picked_point_kind = m.picked_point = -1;
+            picked_mo.picked_kind = picked_mo.picked_index = -1;
+        }
+        if (near_marker < 0 && !near_gate && near_point < 0)
             face_under_pointer(&m.picked_list, &m.picked_face);
         if (editing_view) {
             // a click selects the face (Ctrl: adds it or takes it away), or the shape it was made of
@@ -1494,7 +1856,20 @@ void draw_room(App& app, ImVec2 size) {
 
 // The exit's model picked in the picture: where it stands, moved while its fields are dragged (any change of
 // the room saves its exits' models' places), back to the game's place on request.
-void draw_picked_gate(App& app) {
+// The picked exit's model's name: its exit, its part and the model it shows.
+std::string gate_name(const App& app) {
+    for (const auto& g : m.world.gate_models) {
+        if (g.key == m.picked_gate_key && m.picked_gate_part >= 0 && m.picked_gate_part < 5)
+            return fmt(app.language, S::map_gate_part,
+                       {std::to_string(m.picked_gate_key), std::to_string(m.picked_gate_part),
+                        std::to_string(g.parts[static_cast<std::size_t>(m.picked_gate_part)].member)});
+    }
+    return {};
+}
+
+// The picked exit's model: its name (in the panel), its place in fields shared by the panel and the bar over the
+// picture (bar true; both write the change at once, so both follow a drag), and putting it back.
+void draw_picked_gate(App& app, bool bar) {
     const auto lang = app.language;
     Replacing& p = m.rep;
     const GateModelPart* part = nullptr;
@@ -1506,22 +1881,28 @@ void draw_picked_gate(App& app) {
         m.picked_gate = false;
         return;
     }
+    ImGui::PushID(bar ? "gate_bar" : "gate_panel");
     const std::pair<int, int> id{m.picked_gate_key, m.picked_gate_part};
     const auto moved = p.r.gate_points.find(id);
     const auto at = p.active && moved != p.r.gate_points.end() ? moved->second : part->position;
-    const std::string label =
-        fmt(lang, S::map_gate_part,
-            {std::to_string(m.picked_gate_key), std::to_string(m.picked_gate_part), std::to_string(part->member)});
     float v[3] = {static_cast<float>(at[0]) * kFx, static_cast<float>(at[1]) * kFx, static_cast<float>(at[2]) * kFx};
-    ImGui::TextUnformatted(label.c_str());
+    if (!bar)
+        ImGui::TextUnformatted(gate_name(app).c_str());
     if (!p.active) {
+        if (bar)
+            ImGui::SameLine();
         ImGui::TextUnformatted(
             fmt(lang, S::map_gate_at, {std::to_string(v[0]), std::to_string(v[1]), std::to_string(v[2])}).c_str());
-        ImGui::TextDisabled("%s", tr(lang, S::map_gate_move_hint));
+        if (!bar)
+            ImGui::TextDisabled("%s", tr(lang, S::map_gate_move_hint));
+        ImGui::PopID();
         return;
     }
-    ImGui::SetNextItemWidth(20 * ImGui::GetFontSize());
-    const bool dragged = ImGui::DragFloat3(tr(lang, S::map_marker_place), v, 0.02f, -100000.0f, 100000.0f, "%.2f");
+    if (bar)
+        ImGui::SameLine();
+    ImGui::SetNextItemWidth((bar ? 15.0f : 20.0f) * ImGui::GetFontSize());
+    const bool dragged =
+        ImGui::DragFloat3(bar ? "##at" : tr(lang, S::map_marker_place), v, 0.02f, -100000.0f, 100000.0f, "%.2f");
     undo_field();  // the exits' models as they were, for undo
     if (dragged) {
         p.r.gate_points[id] = {static_cast<std::int32_t>(std::lround(v[0] * 4096.0)),
@@ -1529,10 +1910,191 @@ void draw_picked_gate(App& app) {
                                static_cast<std::int32_t>(std::lround(v[2] * 4096.0))};
     }
     if (moved != p.r.gate_points.end()) {
-        same_line_if_room(button_width(tr(lang, S::map_gate_reset)));
+        if (bar)
+            ImGui::SameLine();
+        else
+            same_line_if_room(button_width(tr(lang, S::map_gate_reset)));
         if (ImGui::SmallButton(tr(lang, S::map_gate_reset))) {
             edit_push();
             p.r.gate_points.erase(id);
+        }
+    }
+    ImGui::PopID();
+}
+
+// The picked room marker's place, facing and To ground, in the panel (bar false) and over the picture (bar
+// true). Both show the same values: while either is held (this frame or the last), `marker_edit` holds them for
+// both and for the picture; the room is made again when one is let go of.
+void room_marker_fields(App& app, bool bar) {
+    const auto lang = app.language;
+    Replacing& p = m.rep;
+    if (!showing_built())
+        return;
+    const std::vector<Marker> shown_markers = markers(p.built);
+    if (m.picked_marker < 0 || m.picked_marker >= static_cast<int>(shown_markers.size()))
+        return;
+    const Marker& mk = shown_markers[static_cast<std::size_t>(m.picked_marker)];
+    auto& e = m.marker_edit;
+    const int frame = ImGui::GetFrameCount();
+    if (e.held_frame < frame - 1 || e.name != mk.name) {
+        e.name = mk.name;
+        for (std::size_t a = 0; a < 3; ++a)
+            e.at[a] = static_cast<float>(mk.place[a]) * kFx;
+        e.facing = static_cast<float>(mk.extra) * 360.0f / 65536.0f;
+    }
+    float* at = e.at;
+    float& facing = e.facing;
+    bool moved = false;
+    ImGui::PushID(bar ? "marker_bar" : "marker_panel");
+    if (!bar) {
+        ImGui::TextUnformatted(mk.name.c_str());
+        if (mk.name.rfind("pent", 0) == 0) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", tr(lang, S::map_marker_entry));
+        }
+    } else {
+        ImGui::SameLine();
+    }
+    ImGui::SetNextItemWidth((bar ? 15.0f : 20.0f) * ImGui::GetFontSize());
+    ImGui::DragFloat3(bar ? "##at" : tr(lang, S::map_marker_place), at, 0.02f, -100000.0f, 100000.0f, "%.2f");
+    undo_field();  // the markers as they were, for undo
+    moved |= ImGui::IsItemDeactivatedAfterEdit();
+    if (ImGui::IsItemActive())
+        e.held_frame = frame;
+    if (bar)
+        ImGui::SameLine();
+    ImGui::SetNextItemWidth((bar ? 5.0f : 8.0f) * ImGui::GetFontSize());
+    ImGui::DragFloat(tr(lang, S::map_marker_facing), &facing, 1.0f, -360.0f, 360.0f, "%.0f");
+    undo_field();
+    moved |= ImGui::IsItemDeactivatedAfterEdit();
+    if (ImGui::IsItemActive())
+        e.held_frame = frame;
+    e.held = e.held_frame >= frame - 1;
+    if (bar)
+        ImGui::SameLine();
+    else
+        same_line_if_room(button_width(tr(lang, S::map_to_ground)));
+    if (ImGui::SmallButton(tr(lang, S::map_to_ground))) {
+        double y = 0;
+        if (ground_under(p.built, at[0] * 4096.0, at[2] * 4096.0, at[1] * 4096.0 + 4096.0, &y) ||
+            ground_under(p.built, at[0] * 4096.0, at[2] * 4096.0, 1e18, &y)) {
+            edit_push();
+            at[1] = static_cast<float>(y / 4096.0 + 0.1);  // as the game's sit, a tenth above
+            moved = true;
+        }
+    }
+    if (moved) {
+        p.r.markers[mk.name] = {
+            static_cast<std::int32_t>(std::lround(at[0] * 4096.0)),
+            static_cast<std::int32_t>(std::lround(at[1] * 4096.0)),
+            static_cast<std::int32_t>(std::lround(at[2] * 4096.0)),
+            static_cast<std::int32_t>(std::lround(std::fmod(facing + 360.0f, 360.0f) * 65536.0f / 360.0f))};
+        p.dirty = true;
+        e.held_frame = frame;  // shown where it was let go of until the room is made again
+    }
+    ImGui::PopID();
+}
+
+// The picked mission point's place and facing over the picture, and To ground; kept for undo as the field is
+// taken hold of, written to the mission at once (its summary and the picture follow).
+void mission_point_fields(App& app) {
+    const auto lang = app.language;
+    const auto kind = static_cast<MissionPoint::Kind>(m.picked_point_kind);
+    MissionPointPlace pp;
+    if (!mission_point(app, kind, m.picked_point, &pp)) {
+        m.picked_point_kind = m.picked_point = -1;
+        return;
+    }
+    ImGui::PushID("point_bar");
+    ImGui::SameLine();
+    float v[3] = {static_cast<float>(pp.at[0]) * kFx, static_cast<float>(pp.at[1]) * kFx,
+                  static_cast<float>(pp.at[2]) * kFx};
+    float facing = static_cast<float>(pp.facing);
+    ImGui::SetNextItemWidth(15.0f * ImGui::GetFontSize());
+    bool changed = ImGui::DragFloat3("##at", v, 0.02f, -100000.0f, 100000.0f, "%.2f");
+    if (ImGui::IsItemActivated())
+        mission_point_push(app, kind, m.picked_point);
+    else if (ImGui::IsItemDeactivated() && !ImGui::IsItemDeactivatedAfterEdit())
+        mission_point_unpush();
+    if (pp.has_facing) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(5.0f * ImGui::GetFontSize());
+        changed |= ImGui::DragFloat(tr(lang, S::map_marker_facing), &facing, 1.0f, -360.0f, 360.0f, "%.0f");
+        if (ImGui::IsItemActivated())
+            mission_point_push(app, kind, m.picked_point);
+        else if (ImGui::IsItemDeactivated() && !ImGui::IsItemDeactivatedAfterEdit())
+            mission_point_unpush();
+    }
+    // To ground: the floor under it in the collision shown, a tenth above (as the game's sit)
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr(lang, S::map_to_ground))) {
+        double y = 0;
+        if (ground_under(shown(), v[0] * 4096.0, v[2] * 4096.0, v[1] * 4096.0 + 4096.0, &y) ||
+            ground_under(shown(), v[0] * 4096.0, v[2] * 4096.0, 1e18, &y)) {
+            mission_point_push(app, kind, m.picked_point);
+            v[1] = static_cast<float>(y / 4096.0 + 0.1);
+            changed = true;
+        }
+    }
+    if (changed) {
+        mission_point_move(app, kind, m.picked_point,
+                           {static_cast<std::int32_t>(std::lround(v[0] * 4096.0)),
+                            static_cast<std::int32_t>(std::lround(v[1] * 4096.0)),
+                            static_cast<std::int32_t>(std::lround(v[2] * 4096.0))},
+                           static_cast<int>(std::lround(facing)));
+    }
+    ImGui::PopID();
+}
+
+// A row under the tools, only while something is picked: its name and its place (and facing) to drag or type,
+// the same values as the left panel's. Picking a room marker or an exit's model starts a markers-only change
+// of the room when there is none, so they are movable at once.
+void draw_selection_bar(App& app) {
+    const auto lang = app.language;
+    Replacing& p = m.rep;
+    const bool point = m.picked_point_kind >= 0 && m.picked_point >= 0;
+    if (!point && !m.picked_gate && m.picked_marker < 0)
+        return;
+    if (!point && !p.active && m.room != nullptr && m.has_collision && app.current_mod() != nullptr) {
+        start_kept_change();
+        m.show_markers = true;
+    }
+    ImGui::AlignTextToFramePadding();
+    if (point) {
+        MissionPointPlace pp;
+        if (!mission_point(app, static_cast<MissionPoint::Kind>(m.picked_point_kind), m.picked_point, &pp)) {
+            m.picked_point_kind = m.picked_point = -1;
+            ImGui::NewLine();
+            return;
+        }
+        ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "%s", pp.name.c_str());
+        mission_point_fields(app);
+    } else if (m.picked_gate) {
+        ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "%s", gate_name(app).c_str());
+        draw_picked_gate(app, true);
+    } else {
+        const std::vector<Marker> list = showing_built() ? markers(p.built) : m.markers;
+        if (m.picked_marker >= static_cast<int>(list.size())) {
+            ImGui::NewLine();
+            return;
+        }
+        ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "%s",
+                           list[static_cast<std::size_t>(m.picked_marker)].name.c_str());
+        const Marker& mk = list[static_cast<std::size_t>(m.picked_marker)];
+        ImGui::SameLine();
+        if (showing_built()) {
+            room_marker_fields(app, true);
+        } else if (p.active && !p.built_ok && p.edit_error.empty() && p.error.empty()) {
+            ImGui::TextDisabled("%s", tr(lang, S::map_marker_bar_wait));
+        } else {
+            // the game's room shown (no mod, or "Game's" chosen): where it is, not movable here
+            ImGui::TextDisabled("%.2f  %.2f  %.2f   %.0f°", static_cast<float>(mk.place[0]) * kFx,
+                                static_cast<float>(mk.place[1]) * kFx, static_cast<float>(mk.place[2]) * kFx,
+                                static_cast<double>(mk.extra) * 360.0 / 65536.0);
+            if (app.current_mod() == nullptr) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(%s)", tr(lang, S::choose_mod_first));
+            }
         }
     }
 }
@@ -1543,57 +2105,10 @@ void draw_details(App& app) {
     if (m.picked_marker >= static_cast<int>(shown_markers.size()))
         m.picked_marker = -1;
     if (m.picked_gate) {
-        draw_picked_gate(app);
+        draw_picked_gate(app, false);
     } else if (m.picked_marker >= 0 && showing_built()) {
         // moved on the new room: where the change puts it
-        Replacing& p = m.rep;
-        const Marker& mk = shown_markers[static_cast<std::size_t>(m.picked_marker)];
-        // the fields hold their own values while held, else the marker's as the room has it now
-        auto& e = m.marker_edit;
-        if (!e.held || e.name != mk.name) {
-            e.name = mk.name;
-            for (std::size_t a = 0; a < 3; ++a)
-                e.at[a] = static_cast<float>(mk.place[a]) * kFx;
-            e.facing = static_cast<float>(mk.extra) * 360.0f / 65536.0f;
-        }
-        float* at = e.at;
-        float& facing = e.facing;
-        bool moved = false, held = false;
-        ImGui::TextUnformatted(mk.name.c_str());
-        if (mk.name.rfind("pent", 0) == 0) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s", tr(lang, S::map_marker_entry));
-        }
-        ImGui::SetNextItemWidth(20 * ImGui::GetFontSize());
-        ImGui::DragFloat3(tr(lang, S::map_marker_place), at, 0.02f, -100000.0f, 100000.0f, "%.2f");
-        undo_field();  // the markers as they were, for undo
-        moved |= ImGui::IsItemDeactivatedAfterEdit();
-        held |= ImGui::IsItemActive();
-        ImGui::SetNextItemWidth(8 * ImGui::GetFontSize());
-        ImGui::DragFloat(tr(lang, S::map_marker_facing), &facing, 1.0f, -360.0f, 360.0f, "%.0f");
-        undo_field();
-        moved |= ImGui::IsItemDeactivatedAfterEdit();
-        held |= ImGui::IsItemActive();
-        e.held = held;
-        same_line_if_room(button_width(tr(lang, S::map_to_ground)));
-        if (ImGui::SmallButton(tr(lang, S::map_to_ground))) {
-            double y = 0;
-            if (ground_under(p.built, at[0] * 4096.0, at[2] * 4096.0, at[1] * 4096.0 + 4096.0, &y) ||
-                ground_under(p.built, at[0] * 4096.0, at[2] * 4096.0, 1e18, &y)) {
-                edit_push();
-                at[1] = static_cast<float>(y / 4096.0 + 0.1);  // as the game's sit, a tenth above
-                moved = true;
-                e.held = false;
-            }
-        }
-        if (moved) {
-            p.r.markers[mk.name] = {
-                static_cast<std::int32_t>(std::lround(at[0] * 4096.0)),
-                static_cast<std::int32_t>(std::lround(at[1] * 4096.0)),
-                static_cast<std::int32_t>(std::lround(at[2] * 4096.0)),
-                static_cast<std::int32_t>(std::lround(std::fmod(facing + 360.0f, 360.0f) * 65536.0f / 360.0f))};
-            p.dirty = true;
-        }
+        room_marker_fields(app, false);
     } else if (m.picked_marker >= 0) {
         const Marker& mk = m.markers[static_cast<std::size_t>(m.picked_marker)];
         ImGui::TextUnformatted(fmt(lang, S::map_marker_picked,
@@ -1687,6 +2202,7 @@ void draw_lists(App& app) {
                 m.picked_marker = static_cast<int>(k);
                 m.picked_face = m.picked_list = -1;
                 m.picked_gate = false;
+                m.picked_point_kind = m.picked_point = -1;
             }
         }
     }
@@ -2282,6 +2798,7 @@ bool draw_model_steps(App& app, const Item& item) {
 void start_kept_change() {
     Replacing& p = m.rep;
     p = Replacing{};
+    history_clear(EditOwner::room);
     p.active = true;
     p.r.world = m.world.code;
     p.r.room = m.room->index;
@@ -2325,6 +2842,7 @@ void edit_push() {
         p.undo.pop_front();
     p.parked_redo = std::move(p.redo);
     p.redo.clear();
+    history_push(EditOwner::room);
 }
 
 // The step edit_push just kept taken back (a drag cancelled, or a field let go of unchanged), Redo as it was.
@@ -2335,6 +2853,7 @@ void edit_unpush() {
     p.undo.pop_back();
     p.redo = std::move(p.parked_redo);
     p.parked_redo.clear();
+    history_unpush(EditOwner::room);
 }
 
 // After a field that changes the room's change: its state kept for undo when taken hold of, and given back
@@ -2352,12 +2871,12 @@ void edits_changed() {
     m.shape_names_for = -1;  // the picked shape's names field filled again (shapes may have moved or changed)
 }
 
-void edit_undo(bool redo) {
+bool edit_undo(bool redo) {
     Replacing& p = m.rep;
     auto& from = redo ? p.redo : p.undo;
     auto& to = redo ? p.undo : p.redo;
     if (from.empty())
-        return;
+        return false;
     to.push_back(undo_state());
     const bool markers_moved = from.back().markers != p.r.markers;
     p.r.edits = std::move(from.back().edits);
@@ -2367,9 +2886,11 @@ void edit_undo(bool redo) {
     if (m.picked_shape >= static_cast<int>(p.r.edits.shapes.size()))
         m.picked_shape = -1;
     m.marker_edit.held = false;  // the picked marker's fields show where it is now
+    m.marker_edit.held_frame = -10;
     edits_changed();
     if (markers_moved)
         p.dirty = true;  // a model's collision holds its markers: made again
+    return true;
 }
 
 // The shape picked in the picture or the list, or null.
@@ -2780,7 +3301,7 @@ void draw_collision_editor(App& app) {
         p.view = 0;  // the edits are on yours
     ImGui::TextDisabled("%s", tr(lang, S::map_edit_help));
     // the keys, while no field is typed in or held and no handle is dragged (each keeps its own undo step)
-    if (!ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive() && m.gizmo_drag < 0) {
+    if (!ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive() && m.gizmo_drag < 0 && m.point_drag < 0) {
         if (ImGui::IsKeyPressed(ImGuiKey_End, false))
             drop_picked_shape(app);
         else if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && !m.selected.empty())
@@ -2851,6 +3372,35 @@ void draw_collision_editor(App& app) {
     draw_shape_fields(app);
 }
 
+// The room's change saved into the mod: "Save into the mod" in the panel, "Save room" over the picture.
+void save_room(App& app) {
+    const auto lang = app.language;
+    Replacing& p = m.rep;
+    const Mod* mod = app.current_mod();
+    if (mod == nullptr || !p.built_ok || !p.edit_error.empty())
+        return;
+    const fs::path dump = resolve(app.settings, app.settings.graphics_dump);
+
+        WorldOutcome o;
+        std::string why;
+        p.r.world = m.world.code;
+        p.r.room = m.room->index;
+        if (save_change(nitrofs(), dump, mod->dir, p.r, p.model_source, p.collision_source, &o, &why)) {
+            // from now on, the mod's copies
+            const fs::path folder = change_models(mod->dir, m.world.code, m.room->index);
+            if (!p.model_source.empty())
+                p.model_source = folder / p.model_source.filename();
+            if (!p.collision_source.empty())
+                p.collision_source = folder / p.collision_source.filename();
+            p.from_mod = true;
+            p.message = fmt(lang, S::map_saved, {mod->name});
+            app.tell(p.message + "  " + tr(lang, S::restart_note), true);
+        } else {
+            p.error = why;
+            app.tell(fmt(lang, S::save_failed, {why}), false);
+        }
+}
+
 // --- The bars over and under the picture: the collision editor's tools laid out across ---------------------
 
 // "Convert to:" and a button per shape: the selected faces made that shape (convert_selection).
@@ -2898,16 +3448,16 @@ void draw_map_tools(App& app) {
     if (app.current_mod() == nullptr || !m.has_collision)
         return;
     ImGui::PushID("map_toolbar");
-    // undo and redo first, over the picture's left corner
-    if (p.active) {
-        ImGui::BeginDisabled(p.undo.empty());
+    // undo and redo first, over the picture's left corner: the room's change and the mission's points
+    if (p.active || history_can(false) || history_can(true)) {
+        ImGui::BeginDisabled(!history_can(false));
         if (ImGui::Button(tr(lang, S::map_edit_undo)))
-            edit_undo(false);
+            history_step(app, false, true);
         ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::BeginDisabled(p.redo.empty());
+        ImGui::BeginDisabled(!history_can(true));
         if (ImGui::Button(tr(lang, S::map_edit_redo)))
-            edit_undo(true);
+            history_step(app, true, true);
         ImGui::EndDisabled();
         bar_gap();
     }
@@ -3175,26 +3725,8 @@ void draw_replace(App& app, const Item& item) {
     ImGui::SeparatorText(tr(lang, S::map_step_save));
     const fs::path dump = resolve(app.settings, app.settings.graphics_dump);
     ImGui::BeginDisabled(!p.built_ok || !p.edit_error.empty());
-    if (ImGui::Button(tr(lang, S::map_save))) {
-        WorldOutcome o;
-        std::string why;
-        p.r.world = m.world.code;
-        p.r.room = m.room->index;
-        if (save_change(nitrofs(), dump, mod->dir, p.r, p.model_source, p.collision_source, &o, &why)) {
-            // from now on, the mod's copies
-            const fs::path folder = change_models(mod->dir, m.world.code, m.room->index);
-            if (!p.model_source.empty())
-                p.model_source = folder / p.model_source.filename();
-            if (!p.collision_source.empty())
-                p.collision_source = folder / p.collision_source.filename();
-            p.from_mod = true;
-            p.message = fmt(lang, S::map_saved, {mod->name});
-            app.tell(p.message + "  " + tr(lang, S::restart_note), true);
-        } else {
-            p.error = why;
-            app.tell(fmt(lang, S::save_failed, {why}), false);
-        }
-    }
+    if (ImGui::Button(tr(lang, S::map_save)))
+        save_room(app);
     ImGui::EndDisabled();
     if (p.from_mod) {
         same_line_if_room(button_width(tr(lang, S::map_revert)));
@@ -3203,6 +3735,7 @@ void draw_replace(App& app, const Item& item) {
             std::string why;
             if (revert_change(nitrofs(), dump, mod->dir, m.world.code, m.room->index, &o, &why)) {
                 m.rep = Replacing{};
+                history_clear(EditOwner::room);
                 m.rep.message = fmt(lang, S::map_reverted, {mod->name});
                 app.tell(m.rep.message, true);
             } else {
@@ -3311,8 +3844,9 @@ void draw_map_view(App& app, const Item& item) {
     ImGui::Checkbox(tr(lang, S::map_ceilings), &m.show_ceilings);
     same_line_if_room(check_width(tr(lang, S::map_markers)));
     ImGui::Checkbox(tr(lang, S::map_markers), &m.show_markers);
-    // the bar over the picture: the collision editor's tools
+    // the bar over the picture: the collision editor's tools, then what is picked
     draw_map_toolbar(app);
+    draw_selection_bar(app);
     // the picture takes what the bar under it leaves (two rows, three when its fields wrap); the room's
     // other controls are in the left panel, under the catalog (draw_map_controls)
     const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -3332,11 +3866,13 @@ void draw_map_controls(App& app, const Item& item, bool panels) {
     // Undo / Redo of everything the room's change holds (hand edits, markers, exits' models), whatever is
     // open, while no field is typed in and nothing is being dragged
     const ImGuiIO& io = ImGui::GetIO();
-    if (m.rep.active && !io.WantTextInput && m.gizmo_drag < 0 && !ImGui::IsAnyItemActive()) {
+    if ((m.rep.active || history_can(false) || history_can(true)) && !io.WantTextInput && m.gizmo_drag < 0 &&
+        m.point_drag < 0 &&
+        !ImGui::IsAnyItemActive()) {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false))
-            edit_undo(io.KeyShift);
+            history_step(app, io.KeyShift, true);
         else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false))
-            edit_undo(true);
+            history_step(app, true, true);
     }
     if (m.rep.dirty)
         rebuild();
@@ -3348,6 +3884,57 @@ void draw_map_controls(App& app, const Item& item, bool panels) {
     draw_collision_editor(app);
     draw_details(app);
     draw_lists(app);
+}
+
+// --- One history for Undo and Redo: the room's change and the mission's points, in the order they were made
+
+namespace {
+std::vector<EditOwner> history_undo, history_redo, history_parked;
+}  // namespace
+
+void history_push(EditOwner owner) {
+    history_undo.push_back(owner);
+    history_parked = std::move(history_redo);
+    history_redo.clear();
+}
+
+void history_unpush(EditOwner owner) {
+    for (auto it = history_undo.rbegin(); it != history_undo.rend(); ++it) {
+        if (*it == owner) {
+            history_undo.erase(std::next(it).base());
+            break;
+        }
+    }
+    history_redo = std::move(history_parked);
+    history_parked.clear();
+}
+
+void history_clear(EditOwner owner) {
+    for (auto* list : {&history_undo, &history_redo, &history_parked})
+        list->erase(std::remove(list->begin(), list->end(), owner), list->end());
+}
+
+bool history_can(bool redo) {
+    return !(redo ? history_redo : history_undo).empty();
+}
+
+void history_step(App& app, bool redo, bool room_shown) {
+    auto& from = redo ? history_redo : history_undo;
+    auto& to = redo ? history_undo : history_redo;
+    // the last step first; one the owner no longer holds (its oldest dropped, or read again) is passed over
+    for (auto it = from.rbegin(); it != from.rend();) {
+        const EditOwner owner = *it;
+        if (owner == EditOwner::room && !room_shown) {
+            ++it;
+            continue;
+        }
+        const bool done = owner == EditOwner::room ? edit_undo(redo) : mission_point_undo(app, redo);
+        it = std::reverse_iterator(from.erase(std::next(it).base()));
+        if (done) {
+            to.push_back(owner);
+            return;
+        }
+    }
 }
 
 }  // namespace studio

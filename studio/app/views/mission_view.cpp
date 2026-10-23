@@ -10,6 +10,7 @@
 #include "core/missions/mission_db.h"
 #include "core/missions/mission_edit.h"
 #include "core/missions/missions.h"
+#include "core/rooms/kh2_source.h"
 #include "core/rooms/room_collision.h"
 #include "core/rooms/worlds.h"
 #include "core/files/paths.h"
@@ -43,6 +44,15 @@ struct MissionView {
 
 MissionView v;
 
+// The mission's points as they were before each change (see mission_point_push): undone and redone one by one.
+struct PointStep {
+    MissionPoint::Kind kind = MissionPoint::spawner;
+    int index = -1;
+    std::array<std::int32_t, 3> at{};
+    int facing = 0;
+};
+std::vector<PointStep> point_undo, point_redo, point_parked;
+
 fs::path nitrofs() {
     return khdays::vfs::data_root() / "nitrofs";
 }
@@ -60,6 +70,10 @@ int index_of(const App& app, const Item& item) {
 
 void open(App& app, const Item& item) {
     v = MissionView{};
+    point_undo.clear();  // the steps were of the mission read before
+    point_redo.clear();
+    point_parked.clear();
+    history_clear(EditOwner::mission);
     v.item = index_of(app, item);
     const Mod* m = app.current_mod();
     v.mod = m != nullptr ? m->name : std::string();
@@ -239,6 +253,12 @@ std::string spawner_label(App& app, std::size_t number, int group, const EnemyTa
     return text;
 }
 
+// An emblem's words: its number and its kind (evi's byte 1, the kind Ov002_SpawnStateSpots hands
+// Ov002_SpawnSpot; what each kind is has not been read).
+std::string emblem_label(App& app, std::size_t number, const PlacedRow& r) {
+    return fmt(app.language, S::mission_tip_emblem, {std::to_string(number), std::to_string(r.b1)});
+}
+
 std::string chest_label(App& app, std::size_t number, const PlacedRow& r) {
     const auto lang = app.language;
     return fmt(lang, S::mission_tip_chest, {std::to_string(number)}) + "\n" +
@@ -252,30 +272,38 @@ void fill_overlay(App& app, const World& world, const ScriptPlaces& p, int room,
     mo.points.clear();
     EnemyTable t;
     const bool enemies = mission_enemies(&t);
+    const auto add = [&](const std::array<std::int32_t, 3>& at, std::string label, MissionPoint::Kind kind,
+                         std::size_t index, bool has_facing, int facing) {
+        MissionPoint pt;
+        pt.at = at;
+        pt.label = std::move(label);
+        pt.kind = kind;
+        pt.index = static_cast<int>(index);
+        pt.has_facing = has_facing;
+        pt.facing = facing;
+        mo.points.push_back(std::move(pt));
+    };
     for (std::size_t i = 0; i < p.spawners.size(); ++i) {
         const auto& sp = p.spawners[i];
         if (room_under(world, p.rooms, sp.at) == room)
-            mo.points.push_back(
-                {sp.at, spawner_label(app, i + 1, sp.group, enemies ? &t : nullptr), MissionPoint::spawner});
+            add(sp.at, spawner_label(app, i + 1, sp.group, enemies ? &t : nullptr), MissionPoint::spawner, i, false, 0);
     }
-    for (const auto& st : p.starts) {
-        if (st.marker.empty() && room_under(world, p.rooms, st.at) == room) {
-            mo.points.push_back(
-                {st.at, fmt(lang, S::mission_start_short, {std::to_string(st.player)}), MissionPoint::start});
-        }
+    for (std::size_t i = 0; i < p.starts.size(); ++i) {
+        const auto& st = p.starts[i];
+        if (st.marker.empty() && room_under(world, p.rooms, st.at) == room)
+            add(st.at, fmt(lang, S::mission_start_short, {std::to_string(st.player)}), MissionPoint::start, i, true,
+                st.heading);
     }
     if (const auto* rows = chest_rows()) {
         for (std::size_t i = 0; i < rows->size(); ++i) {
             if (room_under(world, p.rooms, (*rows)[i].at) == room)
-                mo.points.push_back({(*rows)[i].at, chest_label(app, i + 1, (*rows)[i]), MissionPoint::chest});
+                add((*rows)[i].at, chest_label(app, i + 1, (*rows)[i]), MissionPoint::chest, i, true, (*rows)[i].h6);
         }
     }
     if (const auto* rows = emblem_rows()) {
         for (std::size_t i = 0; i < rows->size(); ++i) {
-            if (room_under(world, p.rooms, (*rows)[i].at) == room) {
-                mo.points.push_back(
-                    {(*rows)[i].at, fmt(lang, S::mission_emblem_short, {std::to_string(i)}), MissionPoint::emblem});
-            }
+            if (room_under(world, p.rooms, (*rows)[i].at) == room)
+                add((*rows)[i].at, emblem_label(app, i + 1, (*rows)[i]), MissionPoint::emblem, i, false, 0);
         }
     }
 }
@@ -313,12 +341,24 @@ std::string enemy_text(App& app, const EnemyTable& t, std::size_t row) {
                {name != nullptr ? name : "?", std::to_string(id), std::to_string(row)});
 }
 
-// A point edited as three numbers (the game's units, 20.12 written back); true when it changed.
-bool edit_point(const char* id, std::array<std::int32_t, 3>* at) {
+// After a field of a mission's point: the point kept for undo when the field is taken hold of, the step given
+// back when it is let go of unchanged.
+void point_undo_field(App& app, MissionPoint::Kind kind, int index) {
+    if (ImGui::IsItemActivated())
+        mission_point_push(app, kind, index);
+    else if (ImGui::IsItemDeactivated() && !ImGui::IsItemDeactivatedAfterEdit())
+        mission_point_unpush();
+}
+
+// A point edited as three numbers (the game's units, 20.12 written back); true when it changed. Kept for undo
+// as the point `kind`, `index`.
+bool edit_point(App& app, const char* id, std::array<std::int32_t, 3>* at, MissionPoint::Kind kind, int index) {
     float xyz[3] = {static_cast<float>((*at)[0] / 4096.0), static_cast<float>((*at)[1] / 4096.0),
                     static_cast<float>((*at)[2] / 4096.0)};
     ImGui::SetNextItemWidth(20 * ImGui::GetFontSize());
-    if (!ImGui::DragFloat3(id, xyz, 0.05f, 0, 0, "%.2f"))
+    const bool changed = ImGui::DragFloat3(id, xyz, 0.05f, 0, 0, "%.2f");
+    point_undo_field(app, kind, index);
+    if (!changed)
         return false;
     for (int k = 0; k < 3; ++k)
         (*at)[static_cast<std::size_t>(k)] = static_cast<std::int32_t>(std::lround(xyz[k] * 4096.0));
@@ -345,7 +385,7 @@ void focus_button(App& app, const World& world, const ScriptPlaces& all, const s
         return;
     ImGui::SameLine();
     if (ImGui::SmallButton(
-            tr(app.language, kind == MissionPoint::chest ? S::mission_see_chest : S::mission_see_spawner))) {
+            tr(app.language, kind == MissionPoint::chest ? S::mission_see_chest : kind == MissionPoint::emblem ? S::mission_see_emblem : S::mission_see_spawner))) {
         see_in_room(app, world, all, room);
         MissionOverlay& mo = mission_overlay();
         mo.focus = true;
@@ -379,6 +419,26 @@ void section_note(const char* text) {
 }
 
 // --- the summary ------------------------------------------------------------------------
+
+// A section of the summary that folds (open at first; ImGui keeps whether it is open). Opened when the map has
+// just picked one of its points (`kinds`, a bit for each MissionPoint::Kind), so that point's row can be shown.
+bool fold_opens_for_pick(unsigned kinds) {
+    const MissionOverlay& mo = mission_overlay();
+    return mo.scroll && mo.mission == v.item && mo.picked_kind >= 0 && (kinds & (1u << mo.picked_kind)) != 0;
+}
+
+bool section(const char* label, unsigned kinds = 0) {
+    if (fold_opens_for_pick(kinds))
+        ImGui::SetNextItemOpen(true);
+    return ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen);
+}
+
+// A part of a section that folds on its own (Spawners, Enemies put one by one); TreePop() after it when open.
+bool subsection(const char* label, unsigned kinds = 0) {
+    if (fold_opens_for_pick(kinds))
+        ImGui::SetNextItemOpen(true);
+    return ImGui::TreeNodeEx(label, ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
+}
 
 void draw_texts(App& app) {
     const auto lang = app.language;
@@ -418,9 +478,8 @@ void draw_texts(App& app) {
             }
         }
     }
-    if (shown.empty())
+    if (shown.empty() || !section(tr(lang, S::mission_sum_texts)))
         return;
-    ImGui::SeparatorText(tr(lang, S::mission_sum_texts));
     section_note(tr(lang, S::mission_sum_texts_note));
     static const char* const names[] = {"English", "Français", "Deutsch", "Italiano", "Español"};
     for (std::size_t n = 0; n < shown.size(); ++n) {
@@ -455,11 +514,24 @@ void draw_texts(App& app) {
     section_note(tr(lang, S::mission_sum_enter));
 }
 
+// A point's title in the summary: lit when the map's picked point, scrolled to once.
+void point_title(const std::string& text, MissionPoint::Kind kind, int index) {
+    MissionOverlay& mo = mission_overlay();
+    const bool picked = mo.mission == v.item && mo.picked_kind == static_cast<int>(kind) && mo.picked_index == index;
+    if (picked)
+        ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "%s", text.c_str());
+    else
+        ImGui::TextUnformatted(text.c_str());
+    if (picked && mo.scroll) {
+        ImGui::SetScrollHereY(0.3f);
+        mo.scroll = false;
+    }
+}
+
 void draw_starts(App& app, const Placed& p, const World& world) {
     const auto lang = app.language;
-    if (p.starts.empty())
+    if (p.starts.empty() || !section(tr(lang, S::mission_sum_starts), 1u << MissionPoint::start))
         return;
-    ImGui::SeparatorText(tr(lang, S::mission_sum_starts));
     section_note(tr(lang, S::mission_sum_starts_note));
     int id = 0;
     for (const auto& [ref, st] : p.starts) {
@@ -470,14 +542,15 @@ void draw_starts(App& app, const Placed& p, const World& world) {
             ImGui::PopID();
             continue;
         }
-        ImGui::TextUnformatted(fmt(lang, S::mission_sum_start, {std::to_string(st.player)}).c_str());
+        const int index = id - 1;
+        point_title(fmt(lang, S::mission_sum_start, {std::to_string(st.player)}), MissionPoint::start, index);
         ImGui::SameLine();
         ImGui::TextDisabled("%s", where_text(app, ref).c_str());
         ImGui::SameLine();
         room_button(app, world, p.all, st.at);
         ImGui::Indent();
         std::array<std::int32_t, 3> at = st.at;
-        if (edit_point("##at", &at)) {
+        if (edit_point(app, "##at", &at, MissionPoint::start, index)) {
             ScriptStep& step = step_of(ref);
             set_fx(step, 3, at[0]);
             set_fx(step, 4, at[1]);
@@ -487,7 +560,9 @@ void draw_starts(App& app, const Placed& p, const World& world) {
         ImGui::SameLine();
         int heading = st.heading;
         ImGui::SetNextItemWidth(6 * ImGui::GetFontSize());
-        if (ImGui::InputInt(tr(lang, S::mission_sum_facing), &heading, 0, 0)) {
+        const bool turned = ImGui::InputInt(tr(lang, S::mission_sum_facing), &heading, 0, 0);
+        point_undo_field(app, MissionPoint::start, index);
+        if (turned) {
             set_int(step_of(ref), 6, ((heading % 360) + 360) % 360);
             ++v.changes;
         }
@@ -498,6 +573,8 @@ void draw_starts(App& app, const Placed& p, const World& world) {
 
 void draw_time(App& app) {
     const auto lang = app.language;
+    if (!section(tr(lang, S::mission_sum_time)))
+        return;
     bool any = false;
     auto& entries = v.edit.mission.entries;
     for (std::size_t e = 0; e < entries.size(); ++e) {
@@ -514,10 +591,7 @@ void draw_time(App& app) {
                 case StepMeaning::time_limit_sub: label = S::mission_sum_time_sub; break;
                 default: continue;
                 }
-                if (!any) {
-                    ImGui::SeparatorText(tr(lang, S::mission_sum_time));
-                    any = true;
-                }
+                any = true;
                 ImGui::PushID(static_cast<int>(e * 100000 + i * 1000 + k));
                 int seconds = operand_at(st, 4).value / 1000;
                 ImGui::SetNextItemWidth(8 * ImGui::GetFontSize());
@@ -529,16 +603,15 @@ void draw_time(App& app) {
             }
         }
     }
-    if (!any) {
-        ImGui::SeparatorText(tr(lang, S::mission_sum_time));
+    if (!any)
         ImGui::TextDisabled("%s", tr(lang, S::mission_sum_no_time));
-    }
 }
 
 void draw_enemies(App& app, const Placed& p, const World& world) {
     const auto lang = app.language;
     const int em = v.edit.mission.entry("em0");
-    ImGui::SeparatorText(tr(lang, S::mission_sum_enemies));
+    if (!section(tr(lang, S::mission_sum_enemies), 1u << MissionPoint::spawner))
+        return;
     if (em < 0) {
         ImGui::TextDisabled("%s", tr(lang, S::mission_sum_no_enemies));
         return;
@@ -550,12 +623,17 @@ void draw_enemies(App& app, const Placed& p, const World& world) {
         ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1), "%s", why.c_str());
         return;
     }
-    section_note(tr(lang, S::mission_sum_enemies_note));
     bool table_changed = false;
     int id = 0;
+    const bool spawners_open = subsection(
+        fmt(lang, S::mission_sum_spawners, {std::to_string(p.spawners.size())}).c_str(), 1u << MissionPoint::spawner);
+    if (spawners_open)
+        section_note(tr(lang, S::mission_sum_enemies_note));
     for (const auto& [ref, sp] : p.spawners) {
+        if (!spawners_open)
+            break;
         ImGui::PushID(id++);
-        ImGui::TextUnformatted(fmt(lang, S::mission_sum_spawner, {std::to_string(id)}).c_str());
+        point_title(fmt(lang, S::mission_sum_spawner, {std::to_string(id)}), MissionPoint::spawner, id - 1);
         ImGui::SameLine();
         ImGui::TextDisabled("%s", where_text(app, ref).c_str());
         ImGui::SameLine();
@@ -563,7 +641,7 @@ void draw_enemies(App& app, const Placed& p, const World& world) {
         focus_button(app, world, p.all, sp.at, MissionPoint::spawner);
         ImGui::Indent();
         std::array<std::int32_t, 3> at = sp.at;
-        if (edit_point("##at", &at)) {
+        if (edit_point(app, "##at", &at, MissionPoint::spawner, id - 1)) {
             ScriptStep& step = step_of(ref);
             set_fx(step, 5, at[0]);
             set_fx(step, 6, at[1]);
@@ -625,27 +703,34 @@ void draw_enemies(App& app, const Placed& p, const World& world) {
         ImGui::Unindent();
         ImGui::PopID();
     }
-    if (p.spawners.empty())
-        ImGui::TextDisabled("%s", tr(lang, S::mission_sum_no_spawners));
+    if (spawners_open) {
+        if (p.spawners.empty())
+            ImGui::TextDisabled("%s", tr(lang, S::mission_sum_no_spawners));
+        ImGui::TreePop();
+    }
     // the enemies put one by one at a source the script made (Ov002_CreateActorFromMarker(source, row))
-    bool marker_title = false;
     auto& entries = v.edit.mission.entries;
-    for (std::size_t e = 0; e < entries.size(); ++e) {
+    const auto one_by_one = [&](const ScriptStep& st, const Script& sc) {
+        return step_meaning(st, &sc).kind == StepMeaning::enemy_at && operand_at(st, 2).mode == 1;
+    };
+    bool any_one_by_one = false;
+    for (const auto& en : entries) {
+        for (const auto& sc : en.archive.scripts) {
+            for (const auto& st : sc.steps)
+                any_one_by_one = any_one_by_one || one_by_one(st, sc);
+        }
+    }
+    const bool marker_open = any_one_by_one && subsection(tr(lang, S::mission_sum_marker_enemies));
+    if (marker_open)
+        section_note(tr(lang, S::mission_sum_marker_enemies_note));
+    for (std::size_t e = 0; marker_open && e < entries.size(); ++e) {
         for (std::size_t i = 0; i < entries[e].archive.scripts.size(); ++i) {
             Script& sc = entries[e].archive.scripts[i];
             for (std::size_t k = 0; k < sc.steps.size(); ++k) {
                 ScriptStep& st = sc.steps[k];
-                if (step_meaning(st, &sc).kind != StepMeaning::enemy_at)
+                if (!one_by_one(st, sc))
                     continue;
                 const OperandSlot source = operand_at(st, 0), row = operand_at(st, 2);
-                if (row.mode != 1)
-                    continue;
-                if (!marker_title) {
-                    ImGui::Spacing();
-                    ImGui::TextUnformatted(tr(lang, S::mission_sum_marker_enemies));
-                    section_note(tr(lang, S::mission_sum_marker_enemies_note));
-                    marker_title = true;
-                }
                 ImGui::PushID(static_cast<int>(100000 + e * 10000 + i * 1000 + k));
                 ImGui::SetNextItemWidth(18 * ImGui::GetFontSize());
                 if (ImGui::BeginCombo("##marker", enemy_text(app, t, static_cast<std::size_t>(row.value)).c_str())) {
@@ -665,6 +750,8 @@ void draw_enemies(App& app, const Placed& p, const World& world) {
             }
         }
     }
+    if (marker_open)
+        ImGui::TreePop();
     if (table_changed) {
         if (write_enemy_table_over(data, t, &why)) {
             ++v.changes;
@@ -678,7 +765,9 @@ void draw_enemies(App& app, const Placed& p, const World& world) {
 void draw_placed(App& app, const Placed& p, const World& world, bool chests) {
     const auto lang = app.language;
     PlacedSet* set = placed_set_of(chests ? v.edit.trbox_sets : v.edit.evi_sets, v.edit.number);
-    ImGui::SeparatorText(tr(lang, chests ? S::mission_sum_chests : S::mission_sum_emblems));
+    if (!section(tr(lang, chests ? S::mission_sum_chests : S::mission_sum_emblems),
+                 1u << (chests ? MissionPoint::chest : MissionPoint::emblem)))
+        return;
     if (set == nullptr || set->rows.empty()) {
         ImGui::TextDisabled("%s", tr(lang, chests ? S::mission_sum_no_chests : S::mission_sum_no_emblems));
         return;
@@ -687,15 +776,22 @@ void draw_placed(App& app, const Placed& p, const World& world, bool chests) {
     bool changed = false;
     for (std::size_t i = 0; i < set->rows.size(); ++i) {
         PlacedRow& r = set->rows[i];
-        ImGui::PushID(static_cast<int>(i));
-        ImGui::TextUnformatted(
-            fmt(lang, chests ? S::mission_sum_chest : S::mission_sum_emblem, {std::to_string(i + 1)}).c_str());
+        const MissionPoint::Kind kind = chests ? MissionPoint::chest : MissionPoint::emblem;
+        const int index = static_cast<int>(i);
+        ImGui::PushID(index);
+        point_title(fmt(lang, chests ? S::mission_sum_chest : S::mission_sum_emblem, {std::to_string(i + 1)}), kind,
+                    index);
+        if (!chests) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", fmt(lang, S::mission_emblem_kind, {std::to_string(r.b1)}).c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", tr(lang, S::mission_emblem_kind_hint));
+        }
         ImGui::SameLine();
         room_button(app, world, p.all, r.at);
-        if (chests)
-            focus_button(app, world, p.all, r.at, MissionPoint::chest);
+        focus_button(app, world, p.all, r.at, kind);
         ImGui::Indent();
-        changed |= edit_point("##at", &r.at);
+        changed |= edit_point(app, "##at", &r.at, kind, index);
         if (chests) {
             ImGui::SameLine();
             int contents = r.h2;
@@ -707,7 +803,9 @@ void draw_placed(App& app, const Placed& p, const World& world, bool chests) {
             ImGui::SameLine();
             int heading = r.h6;
             ImGui::SetNextItemWidth(6 * ImGui::GetFontSize());
-            if (ImGui::InputInt(tr(lang, S::mission_sum_facing), &heading, 0, 0)) {
+            const bool turned = ImGui::InputInt(tr(lang, S::mission_sum_facing), &heading, 0, 0);
+            point_undo_field(app, kind, index);
+            if (turned) {
                 r.h6 = static_cast<std::int16_t>(((heading % 360) + 360) % 360);
                 changed = true;
             }
@@ -727,7 +825,8 @@ void draw_placed(App& app, const Placed& p, const World& world, bool chests) {
 
 void draw_objective(App& app) {
     const auto lang = app.language;
-    ImGui::SeparatorText(tr(lang, S::mission_sum_objective));
+    if (!section(tr(lang, S::mission_sum_objective)))
+        return;
     section_note(tr(lang, S::mission_sum_objective_note));
     bool any = false;
     for (const auto& e : v.edit.mission.entries) {
@@ -750,20 +849,19 @@ void draw_summary(App& app) {
     const auto lang = app.language;
     const Placed p = placed();
     const World& world = mission_world(p.all.world);
-    // the map's points of this mission follow its values as they are changed
-    MissionOverlay& mo = mission_overlay();
-    if (mo.mission == v.item && mo.room >= 0 && mo.world == world.code)
-        fill_overlay(app, world, p.all, mo.room, mo);
     ImGui::BeginChild("##summary", ImVec2(0, 0));
     // where it happens
-    ImGui::SeparatorText(tr(lang, S::mission_sum_where));
-    std::string rooms;
-    for (const auto& [slot, room] : p.all.rooms)
-        rooms += (rooms.empty() ? "" : ", ") + std::to_string(room);
-    const char* code = world_code(p.all.world);
-    ImGui::TextUnformatted(
-        fmt(lang, S::mission_sum_world, {code != nullptr ? code : "?", rooms.empty() ? std::string("-") : rooms})
-            .c_str());
+    ImGui::PushID("where");
+    if (section(tr(lang, S::mission_sum_where))) {
+        std::string rooms;
+        for (const auto& [slot, room] : p.all.rooms)
+            rooms += (rooms.empty() ? "" : ", ") + std::to_string(room);
+        const char* code = world_code(p.all.world);
+        ImGui::TextUnformatted(
+            fmt(lang, S::mission_sum_world, {code != nullptr ? code : "?", rooms.empty() ? std::string("-") : rooms})
+                .c_str());
+    }
+    ImGui::PopID();
     // each section in an ID space of its own (their rows number from 0 alike)
     ImGui::PushID("texts");
     draw_texts(app);
@@ -1020,6 +1118,137 @@ MissionOverlay& mission_overlay() {
     return overlay;
 }
 
+bool mission_point(const App& app, MissionPoint::Kind kind, int index, MissionPointPlace* out) {
+    if (v.item < 0 || !v.error.empty() || index < 0)
+        return false;
+    const auto lang = app.language;
+    const auto i = static_cast<std::size_t>(index);
+    MissionPointPlace pp;
+    switch (kind) {
+    case MissionPoint::spawner: {
+        const Placed p = placed();
+        if (i >= p.spawners.size())
+            return false;
+        pp.at = p.spawners[i].second.at;
+        pp.name = fmt(lang, S::mission_tip_spawner, {std::to_string(i + 1), std::to_string(p.spawners[i].second.group)});
+        break;
+    }
+    case MissionPoint::start: {
+        const Placed p = placed();
+        if (i >= p.starts.size() || !p.starts[i].second.marker.empty())
+            return false;
+        pp.at = p.starts[i].second.at;
+        pp.has_facing = true;
+        pp.facing = p.starts[i].second.heading;
+        pp.name = fmt(lang, S::mission_sum_start, {std::to_string(p.starts[i].second.player)});
+        break;
+    }
+    case MissionPoint::chest:
+    case MissionPoint::emblem: {
+        const auto* rows = kind == MissionPoint::chest ? chest_rows() : emblem_rows();
+        if (rows == nullptr || i >= rows->size())
+            return false;
+        const PlacedRow& r = (*rows)[i];
+        pp.at = r.at;
+        if (kind == MissionPoint::chest) {
+            pp.has_facing = true;
+            pp.facing = r.h6;
+            pp.name = fmt(lang, S::mission_tip_chest, {std::to_string(i + 1)});
+        } else {
+            pp.name = fmt(lang, S::mission_tip_emblem, {std::to_string(i + 1), std::to_string(r.b1)});
+        }
+        break;
+    }
+    }
+    *out = std::move(pp);
+    return true;
+}
+
+void mission_point_move(App& app, MissionPoint::Kind kind, int index, const std::array<std::int32_t, 3>& at,
+                        int facing) {
+    if (v.item < 0 || !v.error.empty() || index < 0)
+        return;
+    const auto i = static_cast<std::size_t>(index);
+    const int degrees = ((facing % 360) + 360) % 360;
+    switch (kind) {
+    case MissionPoint::spawner: {
+        const Placed p = placed();
+        if (i >= p.spawners.size())
+            return;
+        ScriptStep& step = step_of(p.spawners[i].first);
+        set_fx(step, 5, at[0]);
+        set_fx(step, 6, at[1]);
+        set_fx(step, 7, at[2]);
+        break;
+    }
+    case MissionPoint::start: {
+        const Placed p = placed();
+        if (i >= p.starts.size() || !p.starts[i].second.marker.empty())
+            return;
+        ScriptStep& step = step_of(p.starts[i].first);
+        set_fx(step, 3, at[0]);
+        set_fx(step, 4, at[1]);
+        set_fx(step, 5, at[2]);
+        set_int(step, 6, degrees);
+        break;
+    }
+    case MissionPoint::chest:
+    case MissionPoint::emblem: {
+        const bool chests = kind == MissionPoint::chest;
+        PlacedSet* set = placed_set_of(chests ? v.edit.trbox_sets : v.edit.evi_sets, v.edit.number);
+        if (set == nullptr || i >= set->rows.size())
+            return;
+        set->rows[i].at = at;
+        if (chests)
+            set->rows[i].h6 = static_cast<std::int16_t>(degrees);
+        std::string why;
+        if (!write_placed_set_over(chests ? v.edit.trbox : v.edit.evi, *set, &why)) {
+            app.tell(why, false);
+            return;
+        }
+        break;
+    }
+    }
+    ++v.changes;
+}
+
+void mission_point_push(const App& app, MissionPoint::Kind kind, int index) {
+    MissionPointPlace now;
+    if (!mission_point(app, kind, index, &now))
+        return;
+    point_undo.push_back({kind, index, now.at, now.facing});
+    if (point_undo.size() > 200)
+        point_undo.erase(point_undo.begin());
+    point_parked = std::move(point_redo);
+    point_redo.clear();
+    history_push(EditOwner::mission);
+}
+
+void mission_point_unpush() {
+    if (point_undo.empty())
+        return;
+    point_undo.pop_back();
+    point_redo = std::move(point_parked);
+    point_parked.clear();
+    history_unpush(EditOwner::mission);
+}
+
+bool mission_point_undo(App& app, bool redo) {
+    auto& from = redo ? point_redo : point_undo;
+    auto& to = redo ? point_undo : point_redo;
+    while (!from.empty()) {
+        const PointStep s = from.back();
+        from.pop_back();
+        MissionPointPlace now;
+        if (!mission_point(app, s.kind, s.index, &now))
+            continue;  // no longer there (the mission read again)
+        to.push_back({s.kind, s.index, now.at, now.facing});
+        mission_point_move(app, s.kind, s.index, s.at, s.facing);
+        return true;
+    }
+    return false;
+}
+
 namespace {
 
 // What the game says of a mission file: its record in the story's mission list (when it has one) and the
@@ -1169,6 +1398,54 @@ void draw_header(App& app) {
 
 }  // namespace
 
+std::string world_folder_label(const App& app, const std::string& folder) {
+    if (folder == "wd")
+        return tr(app.language, S::tree_worlds);
+    if (folder.size() != 5 || folder.rfind("wd_", 0) != 0)
+        return {};
+    // the game's own names of its worlds, in the interface's language (English when it has none)
+    static int read_for = -1;
+    static std::vector<std::string> names;
+    if (read_for != static_cast<int>(app.language)) {
+        read_for = static_cast<int>(app.language);
+        names.clear();
+        if (!load_world_names(nitrofs(), kLanguageCodes[static_cast<std::size_t>(app.language)], &names, nullptr))
+            load_world_names(nitrofs(), "en", &names, nullptr);
+    }
+    const std::string code = folder.substr(3);
+    for (int i = 0; world_code(i) != nullptr; ++i) {
+        if (code == world_code(i))
+            return static_cast<std::size_t>(i) < names.size() ? names[static_cast<std::size_t>(i)] : std::string();
+    }
+    return {};
+}
+
+const std::string& room_list_label(const App& app, const Item& item) {
+    static const std::string none;
+    if (item.kind != Kind::room)
+        return none;
+    // the pairs (the studio's, then the mod's), read again when the mod or the language changes
+    static std::string read_for = "?";
+    static std::map<std::string, std::string> labels;  // key -> label
+    const Mod* mod = app.current_mod();
+    const std::string now = (mod != nullptr ? u8(mod->dir) : std::string()) + "|" +
+                            std::to_string(static_cast<int>(app.language));
+    if (read_for != now) {
+        read_for = now;
+        labels.clear();
+        for (const Kh2Pair& p : kh2_pairs(mod != nullptr ? mod->dir : fs::path(), nullptr)) {
+            // only rooms compared with their map, and maps KH2 names
+            const char* name = kh2_place_name(p.map);
+            if (name == nullptr || !kh2_pair_seen_alike(p))
+                continue;
+            labels["mi/wd/wd_" + p.world + "/room/" + std::to_string(p.room)] =
+                fmt(app.language, S::tree_room_kh2, {name, p.map});
+        }
+    }
+    const auto found = labels.find(item.key);
+    return found != labels.end() ? found->second : none;
+}
+
 const std::string& mission_list_label(const App& app, const Item& item) {
     static const std::string none;
     if (item.kind != Kind::mission)
@@ -1187,6 +1464,22 @@ void draw_mission_view(App& app, const Item& item) {
     if (!v.error.empty()) {
         ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1), "%s", v.error.c_str());
         return;
+    }
+    // the map's points of this mission follow its values as they are changed, whichever tab is shown
+    {
+        MissionOverlay& mo = mission_overlay();
+        const Placed p = placed();
+        const World& world = mission_world(p.all.world);
+        if (mo.mission == v.item && mo.room >= 0 && mo.world == world.code)
+            fill_overlay(app, world, p.all, mo.room, mo);
+    }
+    // Undo / Redo of the points while the mission is shown alone (beside a room, the map's keys do it)
+    const ImGuiIO& io = ImGui::GetIO();
+    if (app.selected == v.item && !io.WantTextInput && !ImGui::IsAnyItemActive() && io.KeyCtrl) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Z, false))
+            history_step(app, io.KeyShift, false);
+        else if (ImGui::IsKeyPressed(ImGuiKey_Y, false))
+            history_step(app, true, false);
     }
     draw_header(app);
     ImGui::Separator();

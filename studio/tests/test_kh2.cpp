@@ -98,6 +98,26 @@ TEST(the_pairs_are_read_and_a_mods_line_replaces_one) {
     CHECK(notes.empty() && kh2_pair_of(own, "tt", 0) != nullptr && kh2_pair_of(own, "tt", 0)->map == "tt02");
 }
 
+TEST(a_room_is_named_by_its_kh2_map_only_when_compared) {
+    CHECK(kh2_place_name("tt02") != nullptr && std::string(kh2_place_name("tt02")) == "The Usual Spot");
+    CHECK(std::string(kh2_place_name("al13")) == "The Cave of Wonders: Chasm of Challenges");  // markup gone
+    CHECK(std::string(kh2_place_name("bb02")) == "Belle's Room");
+    CHECK(kh2_place_name("al08") == nullptr && kh2_place_name("aw01") == nullptr);
+    const auto own = kh2_pairs({}, nullptr);
+    CHECK(kh2_pair_seen_alike(*kh2_pair_of(own, "tt", 0)));
+    // Beast's Castle 10 and 12 were named alike only: not named
+    CHECK(!kh2_pair_seen_alike(*kh2_pair_of(own, "bb", 10)) && !kh2_pair_seen_alike(*kh2_pair_of(own, "bb", 12)));
+    // every pair the studio names has a KH2 name
+    int named = 0;
+    for (const auto& p : own) {
+        if (kh2_pair_seen_alike(p)) {
+            CHECK(kh2_place_name(p.map) != nullptr);
+            ++named;
+        }
+    }
+    CHECK(named == 51);
+}
+
 TEST(a_placed_point_goes_back_where_the_model_has_it) {
     RoomPlacement place;
     place.scale = 0.01f;

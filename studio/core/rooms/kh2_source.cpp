@@ -20,6 +20,7 @@ extern "C" {
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <utility>
 #include <sstream>
 
 namespace fs = std::filesystem;
@@ -419,6 +420,159 @@ bool make_kh2_room(const fs::path& folder, const std::string& map, const fs::pat
     if (!write_collision(data, map, out.parent_path() / path_u8(map + "_collision.gltf"), &no_walls))
         made->report.push_back("no floors and walls of its own: " + no_walls);
     return true;
+}
+
+namespace {
+// KH2 (Final Mix) place names of the worlds Days shares with it, as OpenKH lists them
+// (https://openkh.dev/kh2/worlds.html, "Final version").
+constexpr std::pair<const char*, const char*> kKh2PlaceNames[] = {
+    {"al00", "Agrabah"},
+    {"al01", "Bazaar"},
+    {"al02", "The Peddler's Shop"},
+    {"al03", "The Palace"},
+    {"al04", "Vault"},
+    {"al05", "Above Agrabah"},
+    {"al06", "Palace Walls"},
+    {"al07", "The Cave of Wonders: Entrance"},
+    {"al09", "The Cave of Wonders: Stone Guardians"},
+    {"al10", "The Cave of Wonders: Treasure Room"},
+    {"al11", "Ruined Chamber"},
+    {"al12", "The Cave of Wonders: Valley of Stone"},
+    {"al13", "The Cave of Wonders: Chasm of Challenges"},
+    {"al14", "Sandswept Ruins"},
+    {"al15", "The Peddler's Shop"},
+    {"bb00", "Entrance Hall"},
+    {"bb01", "Parlor"},
+    {"bb02", "Belle's Room"},
+    {"bb03", "The Beast's Room"},
+    {"bb04", "Ballroom"},
+    {"bb05", "Ballroom"},
+    {"bb06", "Courtyard"},
+    {"bb07", "The East Wing"},
+    {"bb08", "The West Hall"},
+    {"bb09", "The West Wing"},
+    {"bb10", "Dungeon"},
+    {"bb11", "Undercroft"},
+    {"bb12", "Secret Passage"},
+    {"bb13", "Bridge"},
+    {"bb14", "Ballroom"},
+    {"bb15", "Bridge"},
+    {"eh00", "Where Nothing Gathers"},
+    {"eh01", "Alley to Between"},
+    {"eh02", "Fragment Crossing"},
+    {"eh03", "Memory's Skyscraper"},
+    {"eh04", "The Brink of Despair"},
+    {"eh05", "The Soundless Prison"},
+    {"eh06", "Nothing's Call"},
+    {"eh07", "Crooked Ascension"},
+    {"eh08", "Crooked Ascension"},
+    {"eh09", "Twilight's View"},
+    {"eh10", "Hall of Empty Melodies"},
+    {"eh11", "Hall of Empty Melodies"},
+    {"eh12", "Naught's Skyway"},
+    {"eh13", "Proof of Existence"},
+    {"eh14", "Havoc's Divide"},
+    {"eh15", "Addled Impasse"},
+    {"eh16", "Naught's Approach"},
+    {"eh17", "Ruin and Creation's Passage"},
+    {"eh18", "The Altar of Naught"},
+    {"eh19", "Memory's Contortion"},
+    {"eh20", "The World of Nothing"},
+    {"eh21", "Station of Awakening"},
+    {"eh22", "The World of Nothing"},
+    {"eh23", "The World of Nothing"},
+    {"eh24", "The World of Nothing"},
+    {"eh25", "The World of Nothing"},
+    {"eh26", "The World of Nothing"},
+    {"eh27", "The World of Nothing"},
+    {"eh28", "The World of Nothing"},
+    {"eh29", "The World of Nothing"},
+    {"he00", "The Coliseum"},
+    {"he01", "Coliseum Gates"},
+    {"he02", "Coliseum Gates"},
+    {"he03", "Underworld Entrance"},
+    {"he04", "Coliseum Foyer"},
+    {"he05", "Valley of the Dead"},
+    {"he06", "Hades' Chamber"},
+    {"he07", "Cave of the Dead: Entrance"},
+    {"he08", "Well of Captivity"},
+    {"he09", "The Underdrome"},
+    {"he10", "Cave of the Dead: Inner Chamber"},
+    {"he11", "Underworld Caverns: Entrance"},
+    {"he12", "The Lock"},
+    {"he13", "The Underdrome"},
+    {"he14", "Coliseum Gates"},
+    {"he15", "Cave of the Dead: Passage"},
+    {"he16", "Underworld Caverns: The Lost Road"},
+    {"he17", "Underworld Caverns: Atrium"},
+    {"he18", "Coliseum Gates"},
+    {"he19", "The Underdrome"},
+    {"nm00", "Halloween Town Square"},
+    {"nm01", "Dr. Finklestein's Lab"},
+    {"nm02", "Graveyard"},
+    {"nm03", "Curly Hill"},
+    {"nm04", "Hinterlands"},
+    {"nm05", "Yuletide Hill"},
+    {"nm06", "Candy Cane Lane"},
+    {"nm07", "Christmas Tree Plaza"},
+    {"nm08", "Santa's House"},
+    {"nm09", "Toy Factory: Shipping and Receiving"},
+    {"nm10", "Toy Factory: The Wrapping Room"},
+    {"tt00", "The Empty Realm"},
+    {"tt01", "Roxas's Room"},
+    {"tt02", "The Usual Spot"},
+    {"tt03", "Back Alley"},
+    {"tt04", "Sandlot"},
+    {"tt05", "Sandlot"},
+    {"tt06", "Market Street: Station Heights"},
+    {"tt07", "Market Street: Tram Common"},
+    {"tt08", "Station Plaza"},
+    {"tt09", "Central Station"},
+    {"tt10", "Sunset Terrace"},
+    {"tt11", "Sunset Station"},
+    {"tt12", "Sunset Hill"},
+    {"tt13", "The Woods"},
+    {"tt14", "The Old Mansion"},
+    {"tt15", "Mansion: Foyer"},
+    {"tt16", "Mansion: Dining Room"},
+    {"tt17", "Mansion: Library"},
+    {"tt18", "Mansion: The White Room"},
+    {"tt19", "Mansion: Basement Hall"},
+    {"tt20", "Mansion: Basement Hall"},
+    {"tt21", "Mansion: Computer Room"},
+    {"tt22", "Mansion: Basement Corridor"},
+    {"tt23", "Mansion: Pod Room"},
+    {"tt24", "On the Train"},
+    {"tt25", "The Tower"},
+    {"tt26", "Tower: Entryway"},
+    {"tt27", "Tower: Sorcerer's Loft"},
+    {"tt28", "Tower: Wardrobe"},
+    {"tt29", "Tower: Star Chamber"},
+    {"tt30", "Tower: Moon Chamber"},
+    {"tt31", "Tower: Wayward Stairs"},
+    {"tt32", "Station of Serenity"},
+    {"tt33", "Station of Calling"},
+    {"tt34", "Station of Awakening"},
+    {"tt35", "The Mysterial Train"},
+    {"tt36", "Tunnelway"},
+    {"tt37", "Underground Concourse"},
+    {"tt38", "Tower: Wayward Stairs"},
+    {"tt39", "Tower: Wayward Stairs"},
+    {"tt40", "Betwixt and Between"},
+    {"tt41", "The Old Mansion"},
+};
+}  // namespace
+
+const char* kh2_place_name(const std::string& map) {
+    for (const auto& [code, name] : kKh2PlaceNames) {
+        if (map == code)
+            return name;
+    }
+    return nullptr;
+}
+
+bool kh2_pair_seen_alike(const Kh2Pair& pair) {
+    return pair.evidence.find("seen alike") != std::string::npos;
 }
 
 }  // namespace studio

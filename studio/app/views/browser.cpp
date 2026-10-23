@@ -43,6 +43,11 @@ const char* kind_tag(Kind k) {
     return "?";
 }
 
+// What the catalog says beside an item: a mission's day and name, a room's KH2 map.
+const std::string& said_of(const App& app, const Item& item) {
+    return item.kind == Kind::room ? room_list_label(app, item) : mission_list_label(app, item);
+}
+
 // The catalog as folders (core/files/catalog_tree.h), rebuilt when the results change.
 struct TreeView {
     CatalogTree tree;
@@ -63,12 +68,14 @@ void add_mission_name_matches(App& app) {
     };
     const std::string query = folded(app.search);
     if (query.find_first_not_of(' ') == std::string::npos ||
-        (app.kinds & (1u << static_cast<unsigned>(Kind::mission))) == 0)
+        (app.kinds & ((1u << static_cast<unsigned>(Kind::mission)) | (1u << static_cast<unsigned>(Kind::room)))) == 0)
         return;
     const auto found = static_cast<std::ptrdiff_t>(app.results.size());  // sorted: the key's matches
     for (int i = 0; i < static_cast<int>(app.catalog.items.size()); ++i) {
         const Item& item = app.catalog.items[static_cast<std::size_t>(i)];
-        const std::string& said = mission_list_label(app, item);
+        if ((app.kinds & (1u << static_cast<unsigned>(item.kind))) == 0)
+            continue;
+        const std::string& said = said_of(app, item);
         if (said.empty())
             continue;
         const std::string text = item.folded + " " + folded(said);
@@ -99,8 +106,16 @@ void draw_tree_node(App& app, int n) {
         ImGui::SetNextItemOpen(true, ImGuiCond_Always);
     if (!tv.reveal.empty() && tv.reveal[static_cast<std::size_t>(n)])
         ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-    const std::string name =
+    std::string name =
         node.kind >= 0 ? std::string(tr(app.language, kind_word(static_cast<Kind>(node.kind)))) : node.name;
+    // mi/wd and its worlds: their names beside their folders' ("wd_tt - Twilight Town")
+    if (node.kind < 0 && node.parent > 0) {
+        const std::string& up = tv.tree.nodes[static_cast<std::size_t>(node.parent)].name;
+        if ((node.name == "wd" && up == "mi") || (node.name.rfind("wd_", 0) == 0 && up == "wd")) {
+            if (const std::string words = world_folder_label(app, node.name); !words.empty())
+                name += " - " + words;
+        }
+    }
     const std::string label = name + "  (" + std::to_string(node.count) + ")###n" + std::to_string(n);
     ImGuiTreeNodeFlags flags =
         ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanAvailWidth;
@@ -146,11 +161,12 @@ void draw_tree_node(App& app, int n) {
                 ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth |
                     (app.selected == index || app.mission_beside == index ? ImGuiTreeNodeFlags_Selected : 0),
                 "%s  %s%s%s", kind_tag(item.kind), leaf_name(item.key).c_str(),
-                mission_list_label(app, item).empty() ? "" : "   ", mission_list_label(app, item).c_str());
+                said_of(app, item).empty() ? "" : (item.kind == Kind::room ? " - " : "   "),
+                said_of(app, item).c_str());
             if (ImGui::IsItemClicked())
                 select_item(app, index);
             if (ImGui::IsItemHovered()) {
-                const std::string& said = mission_list_label(app, item);
+                const std::string& said = said_of(app, item);
                 if (said.empty())
                     ImGui::SetTooltip("%s", item.group.c_str());
                 else
@@ -295,7 +311,7 @@ void draw_browser(App& app) {
             const auto slash = item.key.find_last_of('/');
             ImGui::TableSetColumnIndex(1);
             ImGui::TextUnformatted(slash == std::string::npos ? item.key.c_str() : item.key.c_str() + slash + 1);
-            if (const std::string& said = mission_list_label(app, item); !said.empty()) {
+            if (const std::string& said = said_of(app, item); !said.empty()) {
                 ImGui::SameLine();
                 ImGui::TextDisabled("%s", said.c_str());
             }
