@@ -64,6 +64,23 @@ On top of the game, a new edition from content the user provides: HD
 textures, models and 2D graphics, new rooms, sounds and videos, a
 single-screen mode, and Mission Mode's multiplayer.
 
+Restored from what the game left unfinished: **Stop**, its sixth magic
+(Stop, Stopra and Stopga; in Spanish Paro, Paro+ and Paro++). Days kept its
+effect, its animations and its names in two languages, but no panels, no
+words and no code that casts it; the port casts it with the game's own
+pieces and makes the rest: enemies in its reach stand still for a time that
+grows with its level, and the damage they take meanwhile lands at once as
+it ends. Its panels show in the deck and the camp with an unused clock
+picture of the game's, take Magic LV and Doublecast like the other magics,
+are made at the moogle's shop (dearer than any other magic) and work in
+multiplayer, where with friendly fire on Stop also holds the other players.
+Its numbers, prices, recipes and words are in an open file,
+[`port/runtime/battle/stop_magic.txt`](port/runtime/battle/stop_magic.txt).
+It is on unless turned off in **Settings → General → Stop magic** (`[gameplay]
+stop_magic = off`, read as the game starts): the game is then the DS's, and a
+save's Stop panels stay in it, unseen, until it is on again. In a room every
+player must have it the same.
+
 Planned: the port on other systems -- Linux first, then, from one ARM64
 build, macOS, Windows on ARM and the Nintendo Switch.
 
@@ -75,8 +92,10 @@ HEARTS 358/2 Days; it finds it by itself where KH Melon Mix keeps one in your
 KINGDOM HEARTS HD 1.5+2.5 ReMIX folder), prepares the game's data from it, and
 can also make the HD pack from your HD collections, add the port to Steam (PC
 and Steam Deck), and install the mod studio. Nothing of the game comes with
-it. The port tells you when a newer release is out. More:
-[`installer/README.md`](installer/README.md).
+it. The port tells you when a newer release is out, and its Download updates
+your copy by itself: it fetches the new installer, checks it, closes the game,
+updates it with your choices (Windows asks for the administrator's permission)
+and opens it again. More: [`installer/README.md`](installer/README.md).
 
 ## Getting started
 
@@ -262,7 +281,8 @@ once:
 - **Antialiasing** (off, 2x, 3x, 4x): the picture made that many times
   larger, then shrunk to the size shown, each pixel the average of what is
   under it -- the 3D's edges come out smooth instead of in steps. 2x is four times the graphics
-  card's work, 4x sixteen; off by default. (A mod's textures, and the HD
+  card's work, 4x sixteen; off by default, and the settings warn while it is on, as the internal
+  resolution already draws the 3D at the window's size or larger. (A mod's textures, and the HD
   replacements, are read at the size they are drawn whatever this says:
   smaller copies of each are kept, so a model far away does not break into
   steps that flicker.)
@@ -581,7 +601,10 @@ The port plays the game's sound itself: the DS's sound driver, which the
 game's ARM7 binary carries, written in C and run on a thread of its own, so
 loading and busy frames no longer cut it; the music streams read by the
 port as the game's stream player would; and the channels mixed at the PC's
-output rate in floating point, without the DS's 10 bits.
+output rate in floating point, without the DS's 10 bits, each read between its
+samples where the DS holds each one until the next (DS-exact sound keeps the
+DS's way), and a mix louder than full scale turned down for a moment rather
+than clipped.
 
 **Settings → Sound** sets the overall volume and those of the music, the
 effects, the voices (what each sound is comes from the name of the
@@ -613,7 +636,13 @@ mods/<Mod>/sounds/
 The loop is a WAV's `smpl` loop, else the Vorbis comments `LOOPSTART` and
 `LOOPLENGTH`, else the original's. The original keeps running unheard, so
 the game waits for it and reads it as before; a file that cannot be read is
-named once and the original plays.
+named once and the original plays. A file plays at the PC's output rate,
+between its own samples, a wave's too (not at the rate of the DS channel
+that plays it); one above 48,000 Hz is brought down to it as it loads,
+filtered; one longer than its original plays on to its end once the original
+ends by itself (not when the game stops it); the voices' streams are decoded
+ahead, so even their first line is the mod's. Best: 48,000 Hz, 16 bits, about
+as loud as the original (a dumped one shows how loud).
 
 **The originals** to make them from: `khdays-native --dump-sounds [DIR]`
 writes every wave, stream, sequence and sequence-archive entry as WAV under
@@ -630,7 +659,12 @@ them from your copy with `tools/hd/theater_movies.py --videos` (see
 nothing of them is in this repository, and `data/` is never committed. With the Movies setting on HD, a movie that has one shows it over
 the whole window with its own sound, in both screen layouts; the game plays
 its own movie behind it, unseen, and waits at its end until the video ends.
-START stops the video where the DS lets you skip the movie. Windows decodes
+The video comes up from black and silence over its first half second and goes
+down to them over its last, so a part cut out of a longer video (hd833's
+first, below) ends without a cut. Where the DS lets you skip the movie, START pauses the video under the
+DS's own scene pause (PAUSE, Continue, Skip), drawn from the game's pieces:
+the game has no pause over its movies, but the HD scenes have the game's, so
+the movies have the same. Windows decodes
 the videos (Media Foundation); a file it cannot play, or a movie without an
 HD video, plays the game's movie, and the log says why. A mod's movie for the
 same movie comes first. The theater's subtitles show over them (see
@@ -639,18 +673,33 @@ same movie comes first. The theater's subtitles show over them (see
 **HD scenes.** The theater also holds the game's event scenes the DS draws in
 real time, made again in HD, and Roxas's monologues as a voice. The same tool
 makes the ones the port plays: the scene map, `port/movies/hd_scenes.txt`
-(86 scenes and 7 monologues, each paired by its lines or its pictures, every
+(95 scenes and 7 monologues, each paired by its lines or its pictures, every
 pair checked side by side; `tools/hd/scene_report.py` says where each video
 of your collection plays). With the Movies setting on HD, when the game
 reaches a scene of the map its videos play over the whole window with their
 sound and subtitles while the game waits; then the game takes its own skip,
-so it goes on exactly as after the DS's Skip. A day's monologue keeps the
+so it goes on exactly as after the DS's Skip. Nothing is cut: the game's
+picture and sound go down to black and silence over half a second before the
+videos, the videos come up from them and go down to them at their end, and
+the game comes up again after them. A day's monologue keeps the
 game's page, and the theater's voice reads it. Without the video, or with
 Movies on PC or DS, the DS's scene plays. START pauses the video and opens
 the game's own pause over it, as on the DS: Continue goes on with the video,
 Skip ends the scene (on two screens the pause shows over the game's screens).
+Three of the theater's movies go on past the DS's: hd830 and hd836 also hold
+the event scene that follows them (Riku and Mickey; Riku and Roxas before
+their fight), so after them that scene is skipped (`skip`), and hd833 also
+shows the fight against Xion the player fights next, so it is split along the
+fight: it stops as the screen fades to black, the game's own scenes take
+Roxas through Wonderland, Neverland and Agrabah, the scene that brings him
+back to Twilight Town shows its next part (Roxas drawing his Keyblade and
+leaping into the fight), and the rest of it, the fight to its end, plays once
+the player has won, before hd848 (`mv#833 hd833[:128.4]`, `EV_S#182
+hd833[129.4:173.2]`, `EV_S#183 hd833[173.2:]`).
 A mod's `cutscenes/scenes.txt` adds or replaces entries (`<script> <videos>
-; <evidence>`, or `off` for the DS's scene), and its
+; <evidence>`, `off` for the DS's scene, `skip <video>` for a scene that
+video shows; `mv#<movie> <videos>`, or `off`, for a movie; a video may be a
+part of it, `<video>[<from>:<until>]` in seconds), and its
 `cutscenes/cinematics/<video>.mp4` comes before your own.
 
 Most of the theater's videos, scenes and movies alike, hold the voices and
@@ -679,9 +728,11 @@ ffmpeg -i source.mp4 -c:v mpeg1video -q:v 2 -c:a mp2 -b:a 256k -f mpeg mods/MyMo
 Besides content, a mod can carry Lua scripts that change how the game plays: they hear what
 happens (each frame, scenes, missions, HP, items, munny, the menus, saving), read and change the
 game's state by name (munny, items, flags, the player's HP and position), add their own options
-to the settings menu's Mods page, and ask the game to act (items, sounds, the field's notice). Each
+to the settings menu's Mods page, and ask the game to act (items, sounds, the field's notice). For
+what the names do not cover, a script reads the game's memory by address, as the decompilation
+describes it, and writes it if its mod declares so (the Mods page tells the player). Each
 runs in its own sandbox: an error or an endless loop stops that mod only, and scripts reach no file
-outside their own folder. `docs/SCRIPTING.md` describes it all; `port/mods_examples/` (installed
+outside their own folder, nor any memory but the game's. `docs/SCRIPTING.md` describes it all; `port/mods_examples/` (installed
 as `mods-examples/`) has examples to copy into `mods/`; khdays-studio's Console shows what the
 mods print and reloads them while the game runs.
 
@@ -790,7 +841,7 @@ the connection error -- the port boots it again in the same window.
 | `assets/` | The library the port and the studio share: the game's data formats decoded to neutral forms (textures, 2D graphics, fonts, text, models and animation, sound, video), the open formats mods use (PNG, BMP, glTF, FBX), the mod layer and the game filesystem; `tests/` its tests (`ctest`) |
 | `installer/` | The Windows installer (Inno Setup) and the helper that runs its steps |
 | `tools/` | ROM verification, data extraction and decompression; `hd/` the HD mods made from the player's HD collections; `tests/` their tests (`python -m unittest`) |
-| `docs/` | [`BUILD.md`](docs/BUILD.md), how the port is built from the decompilation and tested; [`PLATFORM.md`](docs/PLATFORM.md), how it stands in for the DS; [`RENDERING.md`](docs/RENDERING.md), how it draws the game; [`SOUND.md`](docs/SOUND.md), how it plays its sound; [`MULTIPLAYER.md`](docs/MULTIPLAYER.md), its multiplayer and server; [`COMPOSITIONS.md`](docs/COMPOSITIONS.md), the one-screen layouts' format; [`HD_SCREENS.md`](docs/HD_SCREENS.md), the HD screens' files; [`DECOMP_FINDINGS.md`](docs/DECOMP_FINDINGS.md), what the decompilation's C should say differently; [`RUNTIME_MAP.md`](docs/RUNTIME_MAP.md), what the running game does (scenes, overlays, menus, data); [`FORMATS.md`](docs/FORMATS.md), the game's data formats; [`STUDIO.md`](docs/STUDIO.md), how the studio works |
+| `docs/` | [`BUILD.md`](docs/BUILD.md), how the port is built from the decompilation and tested; [`PLATFORM.md`](docs/PLATFORM.md), how it stands in for the DS; [`RENDERING.md`](docs/RENDERING.md), how it draws the game; [`SOUND.md`](docs/SOUND.md), how it plays its sound; [`MULTIPLAYER.md`](docs/MULTIPLAYER.md), its multiplayer and server; [`COMPOSITIONS.md`](docs/COMPOSITIONS.md), the one-screen layouts' format; [`HD_SCREENS.md`](docs/HD_SCREENS.md), the HD screens' files; [`HD_FONTS.md`](docs/HD_FONTS.md), PNG font definitions and rendering; [`FONT_MAPPING.md`](docs/FONT_MAPPING.md), scoped font choices; [`DECOMP_FINDINGS.md`](docs/DECOMP_FINDINGS.md), what the decompilation's C should say differently; [`RUNTIME_MAP.md`](docs/RUNTIME_MAP.md), what the running game does (scenes, overlays, menus, data); [`FORMATS.md`](docs/FORMATS.md), the game's data formats; [`STUDIO.md`](docs/STUDIO.md), how the studio works |
 | `external/khdays-decomp` | The decompilation, pinned; updated deliberately and tested |
 
 ### Checking the port

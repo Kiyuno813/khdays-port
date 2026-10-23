@@ -438,6 +438,16 @@ static void test_settings_file(void)
     khdays_profile_load(&p, path, count_notice);
     CHECK(memcmp(&p.network, &q.network, sizeof(p.network)) == 0);
 
+    /* The Stop magic: on unless turned off; a bad value says so and is on; written back. */
+    CHECK(load_text("", &q) == 0 && q.gameplay.stop_magic);
+    CHECK(load_text("[gameplay]\nstop_magic = off\n", &q) == 0 && !q.gameplay.stop_magic);
+    CHECK(load_text("[gameplay]\nstop_magic = sometimes\n", &q) == 1 && q.gameplay.stop_magic);
+    load_text("[gameplay]\nstop_magic = off\n", &q);
+    path_of("gameplay.ini", path, sizeof(path));
+    khdays_profile_save(&q, path, count_notice);
+    khdays_profile_load(&p, path, count_notice);
+    CHECK(!p.gameplay.stop_magic);
+
     /* Unknown sections, keys and inputs: ignored with a notice each. */
     CHECK(load_text("[future]\nport = 3\n", &q) == 1);
     CHECK(load_text("[video]\nscale = 3\n", &q) == 1);
@@ -925,6 +935,7 @@ static void test_settings_model(void)
         {KHDAYS_SET_SHOW_PING, KHDAYS_ROW_SWITCH, 0, 1, 0},
         {KHDAYS_SET_CHECK_UPDATES, KHDAYS_ROW_SWITCH, 0, 1, 0},
         {KHDAYS_SET_LANGUAGE, KHDAYS_ROW_CHOICE, 0, KHDAYS_LANGUAGE_LAST, 0},
+        {KHDAYS_SET_STOP_MAGIC, KHDAYS_ROW_SWITCH, 0, 1, 0},
         {KHDAYS_SET_SESSION_LOG, KHDAYS_ROW_SWITCH, 0, 1, 0},
         {KHDAYS_SET_RESTORE_BOTH, KHDAYS_ROW_COMMAND, 0, 0, 0},
     };
@@ -965,6 +976,10 @@ static void test_settings_model(void)
                         }
                         CHECK(r->label != NULL && r->label[0] != '\0');
                     }
+                }
+                /* antialiasing warns while it is on: the internal resolution already scales the 3D */
+                if (r->id == KHDAYS_SET_ANTIALIASING) {
+                    CHECK(r->warning != NULL && r->warning[0] != '\0' && r->safe == 1 && *r->value == 1);
                 }
             }
         }
@@ -1783,6 +1798,20 @@ static void test_analog(void)
     CHECK(khdays_analog_heading(-16384, 28378) == 0x1555);
     /* 30 degrees right of up. */
     CHECK(khdays_analog_heading(16384, 28378) == 0x10000 - 0x1555);
+    /* Flip Foot: the game swapped the held Up/Down and Left/Right, so the stick turns around too;
+     * the D-pad's own eighth of the stick's angle leaves it as it is */
+    for (size_t i = 0; i < sizeof(directions) / sizeof(directions[0]); ++i) {
+        const unsigned d = directions[i].dpad;
+        const unsigned swapped =
+            (d & UP ? DOWN : 0) | (d & DOWN ? UP : 0) | (d & LEFT ? RIGHT : 0) | (d & RIGHT ? LEFT : 0);
+        const int stick = khdays_analog_heading(directions[i].x, directions[i].y);
+        CHECK(khdays_analog_heading_turned(stick, game_heading(d)) == stick);
+        CHECK(khdays_analog_heading_turned(stick, game_heading(swapped)) == game_heading(swapped));
+    }
+    CHECK(khdays_analog_heading_turned(0x1555, game_heading(UP | LEFT)) == 0x1555);
+    CHECK(khdays_analog_heading_turned(0x1555, game_heading(UP)) == 0x1555);
+    CHECK(khdays_analog_heading_turned(0x1555, game_heading(DOWN | RIGHT)) == 0x9555);
+    CHECK(khdays_analog_heading_turned(0x1555, game_heading(DOWN)) == 0x9555);
 
     CHECK(khdays_analog_tilt(0, 0) == 0);
     CHECK(khdays_analog_tilt(FULL, 0) == 100);

@@ -1,7 +1,9 @@
 /* The sounds mods replace: a sequence, a sequence archive's entry, a stream or a wave, played from
  * mods/<Mod>/sounds/<identifier>.<wav|flac|ogg> while the original goes on unheard (what the game reads
  * back stays the original's), each decoded once on a thread of its own and played at its own rate
- * (docs/SOUND.md, "Mods' sounds"). All but the decoding runs under the sound bridge's lock. */
+ * (docs/SOUND.md, "Mods' sounds"): the sequence archives' entries from the first sound on and a wave
+ * archive's waves as it loads, ahead, the others when they are first wanted. All but the decoding runs
+ * under the sound bridge's lock. */
 #ifndef KHDAYS_SOUND_MODS_H
 #define KHDAYS_SOUND_MODS_H
 
@@ -27,9 +29,10 @@ void khdays_sound_mods_sequence(const KhdaysSoundArchive *archive, int arm7_play
                                 u32 command_tag);
 
 /* The game's thread: stream `stream` prepared on stream player
- * `stream_player`, from its sample `start` at `rate`, looping as `loop`. */
+ * `stream_player`, from its sample `start` at `rate`, looping as `loop`
+ * (its end the original's samples), in blocks of `block` samples. */
 void khdays_sound_mods_stream(const KhdaysSoundArchive *archive, int stream_player, int stream, uint32_t start,
-                              uint32_t rate, const KhdaysOriginalLoop *loop);
+                              uint32_t rate, const KhdaysOriginalLoop *loop, uint32_t block);
 
 /* The game's thread: wave archive `number` of the archive is at `address`
  * (NNSi_SndArcLoadWaveArc): the channels that start on its waves may play
@@ -49,13 +52,12 @@ int khdays_sound_mods_wave_sample(int handle, uint64_t index, int32_t *sample);
 int khdays_sound_mods_replaces_player(int p);
 int khdays_sound_mods_replaces_stream(int s);
 
-/* One output sample at `rate`: the replacements move on and add to `out`
- * (the PC mixer's scale) under their category's volume (`player_gain` per
- * ARM7 player, `stream_gain` per stream player) and SOUNDCNT's master
- * volume -- the overall volume is the caller's. `finished_tag`: the last
- * command list the ARM7 has done (the shared work's +0). */
+/* One output sample at `rate`: the replacements move on and add to `out` (the PC mixer's scale) under their
+ * category's volume (`player_gain` per ARM7 player, `stream_gain` per stream player, `channel_gain` per channel for
+ * the waves, NULL none) and SOUNDCNT's master volume. `finished_tag`: the last command list the ARM7 has done. A file
+ * longer than its original plays on to its end once the original ends by itself (docs/SOUND.md). */
 void khdays_sound_mods_mix(const KhdaysSoundHw *hw, const KhdaysSnd7Driver *driver, uint32_t rate,
                            uint32_t finished_tag, const float player_gain[16], const float stream_gain[4],
-                           float out[2]);
+                           const float channel_gain[16], float out[2]);
 
 #endif

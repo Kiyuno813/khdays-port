@@ -12,6 +12,7 @@
 #include "onescreen.h"
 #include "png_io.h"
 #include "../../ui/composition.h"
+#include "../screens/movie_pause.h"
 #include "../screens/ui_text.h"
 #include "../../runtime/core/clock.h"
 #include "../../runtime/core/events.h"
@@ -47,6 +48,7 @@ static SDL_Texture *hd;       /* this frame's, or NULL to show the 1x picture as
 static SDL_Texture *hd_movie; /* an HD video's picture, NV12 */
 static int hd_movie_w, hd_movie_h;
 static double hd_movie_time, hd_movie_fps; /* the picture's time and its file's rate, for its subtitles */
+static float hd_movie_level = 1.0f;        /* how much of it shows through its fades */
 static int hd_upper;                       /* engine A is the upper screen */
 static int hd_columns;                     /* its width in DS pixels (256 is the DS's) */
 static int columns;                        /* the picture's width now, in DS pixels (the logical presentation's) */
@@ -946,6 +948,25 @@ int khdays_present_refresh(void)
     return 1;
 }
 
+/* Whether the frame's 2D has tiles a mod draws instead (runtime/mods/tiles2d.h), or elements
+ * finer than the DS's pixels (KES_FINE: a mod's font). */
+static int has_hd_tiles(const KhdaysFramePackage *p)
+{
+    for (size_t i = 0; i < SDL_arraysize(p->hd2d); ++i) {
+        if (p->hd2d[i] != 0u) {
+            return 1;
+        }
+    }
+    for (int s = 0; s < 2; ++s) {
+        for (uint32_t i = 0; i < p->elements[s].count; ++i) {
+            if (p->elements[s].records[i * KE_WORDS + KE_SLOT] & KES_FINE) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 /* Draws package `p`. `first` is set the first time (so its shots and profile
  * are counted only once). */
 static void present(const KhdaysFramePackage *p, int first)
@@ -1030,6 +1051,8 @@ static void present(const KhdaysFramePackage *p, int first)
                 return;
             }
         }
+        /* a mod's tiles are drawn at full resolution even without 3D, or they would come out blurred */
+        const int hd_tiles = has_hd_tiles(p);
         khdays_raster3d_set_one_screen(picture);
         khdays_raster3d_set_hud_shapes(picture ? composition.shapes3d : NULL, picture ? composition.shape3d_count : 0);
         /* a screen blend's frame: engine A shows a VRAM bank, drawn from its 3D at this resolution too */
@@ -1050,12 +1073,12 @@ static void present(const KhdaysFramePackage *p, int first)
                 under_paused_video(&one);
             }
             /* at the DS's own size without 3D, but for a picture with a backdrop of its own (the
-             * camp's Preferences page: an HD picture, no model) */
-            drawn = khdays_gfx_render_draw_one(p, raster || one.backdrop != NULL ? n : 1, raster, &one);
+             * camp's Preferences page: an HD picture, no model) or a mod's tiles */
+            drawn = khdays_gfx_render_draw_one(p, raster || one.backdrop != NULL || hd_tiles ? n : 1, raster, &one);
             one_drawn = drawn;
             one_made = one_made || drawn;
         } else {
-            drawn = khdays_gfx_render_draw(p, raster ? n : 1, raster);
+            drawn = khdays_gfx_render_draw(p, raster || hd_tiles ? n : 1, raster);
         }
         if (drawn) {
             port2d_drawn = 1;
@@ -1179,6 +1202,23 @@ static void present_size(int w, int h)
     }
 }
 
+/* Black over the whole picture, `amount` of it (0 none, 1 all): a fade. */
+static void darken(float amount)
+{
+    SDL_BlendMode mode;
+    Uint8 r, g, b, a;
+    if (amount <= 0.0f) {
+        return;
+    }
+    SDL_GetRenderDrawBlendMode(renderer, &mode);
+    SDL_GetRenderDrawColor(renderer, &r, &g, &b, &a);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, (Uint8)(SDL_min(amount, 1.0f) * 255.0f + 0.5f));
+    SDL_RenderFillRect(renderer, NULL);
+    SDL_SetRenderDrawBlendMode(renderer, mode);
+    SDL_SetRenderDrawColor(renderer, r, g, b, a);
+}
+
 /* An HD video in a movie's place: its newest picture due, over the whole window, letterboxed; the last
  * one stays while the game finishes its movie. */
 static void draw_hd_movie(void)
@@ -1215,6 +1255,7 @@ static void draw_hd_movie(void)
         }
         hd_movie_time = p.time;
         hd_movie_fps = p.fps;
+        hd_movie_level = p.level;
         khdays_hd_picture_done();
     }
     if (hd_movie != NULL) {
@@ -1223,6 +1264,26 @@ static void draw_hd_movie(void)
         if (khdays_subtitles_shown()) {
             khdays_movie_subtitles_draw(renderer, hd_movie_time, hd_movie_fps, hd_movie_w, hd_movie_h);
         }
+        darken(1.0f - hd_movie_level);
+    }
+}
+
+/* The pause over a paused HD movie (runtime/movies/movie_hd.h): the video darkened as the DS darkens
+ * under its pause, the panel centred over it at 4:3. */
+static void draw_movie_pause(void)
+{
+    int selected, lit, language;
+    SDL_Texture *panel;
+    if (hd_movie == NULL || !khdays_movie_hd_movie_pause(&selected, &lit, &language)) {
+        return;
+    }
+    darken(0.5f);
+    panel = khdays_movie_pause_panel(renderer, language, selected, lit);
+    if (panel != NULL) {
+        const float h = (float)hd_movie_h, w = h * 4.0f / 3.0f;
+        const SDL_FRect at = {((float)hd_movie_w - w) / 2.0f, 0.0f, w, h};
+        SDL_SetTextureScaleMode(panel, video.smooth_scaling ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+        SDL_RenderTexture(renderer, panel, NULL, &at);
     }
 }
 
@@ -1259,6 +1320,7 @@ void khdays_present_draw(void)
     const int paused = khdays_movie_hd_scene_paused();
     if (khdays_movie_hd_showing() && !paused) {
         draw_hd_movie();
+        draw_movie_pause();
         return;
     }
     if (hd_movie != NULL && !paused) {
@@ -1327,6 +1389,8 @@ void khdays_present_draw(void)
                                  (float)H};
         SDL_RenderTexture(renderer, hd, NULL, &place);
     }
+    /* around a scene's videos the game goes down to black and comes up from it */
+    darken(1.0f - khdays_movie_hd_game_level());
 }
 
 SDL_Renderer *khdays_present_event(const SDL_Event *event, int *renewed)

@@ -2,10 +2,15 @@
 #include "replace.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h> /* MultiByteToWideChar: open_utf8 */
+#endif
 
 #define STB_VORBIS_HEADER_ONLY
 #include "stb_vorbis.c"
@@ -94,9 +99,28 @@ static uint16_t le16(const uint8_t *p)
     return (uint16_t)(p[0] | p[1] << 8);
 }
 
+/* Opens a file by its UTF-8 path; on Windows through the wide path, so names like "Días" work. */
+static FILE *open_utf8(const char *path, const char *mode)
+{
+#ifdef _WIN32
+    const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+    wchar_t *wide = n > 0 ? malloc((size_t)n * sizeof(wchar_t)) : NULL;
+    wchar_t wide_mode[8];
+    FILE *f = NULL;
+    if (wide != NULL && MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, n) == n &&
+        MultiByteToWideChar(CP_UTF8, 0, mode, -1, wide_mode, 8) > 0) {
+        f = _wfopen(wide, wide_mode);
+    }
+    free(wide);
+    return f;
+#else
+    return fopen(path, mode);
+#endif
+}
+
 static uint8_t *read_file(const char *path, size_t *size)
 {
-    FILE *f = fopen(path, "rb");
+    FILE *f = open_utf8(path, "rb");
     uint8_t *data;
     long length;
     if (f == NULL) {
@@ -226,9 +250,12 @@ static int load_flac(KhdaysReplacement *r, const char *path, const KhdaysOrigina
                      int why_size)
 {
     Comments comments = {-1, -1};
-    drflac *flac = drflac_open_file_with_metadata(path, flac_metadata, &comments, NULL);
+    size_t size;
+    uint8_t *data = read_file(path, &size); /* read here: dr_flac's own opening is not UTF-8 on Windows */
+    drflac *flac = data != NULL ? drflac_open_memory_with_metadata(data, size, flac_metadata, &comments, NULL) : NULL;
     if (flac == NULL) {
-        say(why, why_size, "is not a FLAC file dr_flac can read");
+        say(why, why_size, data == NULL ? "cannot be read" : "is not a FLAC file dr_flac can read");
+        free(data);
         return 0;
     }
     r->rate = flac->sampleRate;
@@ -236,17 +263,20 @@ static int load_flac(KhdaysReplacement *r, const char *path, const KhdaysOrigina
     r->frames = flac->totalPCMFrameCount;
     if (r->channels < 1 || r->channels > 2 || r->frames == 0) {
         drflac_close(flac);
+        free(data);
         say(why, why_size, "has other than 1 or 2 channels, or no length");
         return 0;
     }
     r->samples = malloc((size_t)r->frames * (size_t)r->channels * sizeof(int16_t));
     if (r->samples == NULL) {
         drflac_close(flac);
+        free(data);
         say(why, why_size, "is too large");
         return 0;
     }
     r->frames = drflac_read_pcm_frames_s16(flac, r->frames, r->samples);
     drflac_close(flac);
+    free(data);
     set_loop(r, comments.start, comments.start >= 0 && comments.length > 0 ? comments.start + comments.length : -1,
              original);
     return 1;
@@ -257,13 +287,16 @@ static int load_flac(KhdaysReplacement *r, const char *path, const KhdaysOrigina
 static int load_ogg(KhdaysReplacement *r, const char *path, const KhdaysOriginalLoop *original, char *why, int why_size)
 {
     int error = 0;
-    stb_vorbis *ogg = stb_vorbis_open_filename(path, &error, NULL);
+    size_t size;
+    uint8_t *data = read_file(path, &size); /* read here: stb_vorbis's own opening is not UTF-8 on Windows */
+    stb_vorbis *ogg = data != NULL && size <= INT_MAX ? stb_vorbis_open_memory(data, (int)size, &error, NULL) : NULL;
     stb_vorbis_info info;
     stb_vorbis_comment list;
     Comments comments = {-1, -1};
     uint64_t made = 0;
     if (ogg == NULL) {
-        say(why, why_size, "is not an Ogg Vorbis file stb_vorbis can read");
+        say(why, why_size, data == NULL ? "cannot be read" : "is not an Ogg Vorbis file stb_vorbis can read");
+        free(data);
         return 0;
     }
     info = stb_vorbis_get_info(ogg);
@@ -276,12 +309,14 @@ static int load_ogg(KhdaysReplacement *r, const char *path, const KhdaysOriginal
     r->frames = stb_vorbis_stream_length_in_samples(ogg);
     if (r->channels < 1 || r->channels > 2 || r->frames == 0) {
         stb_vorbis_close(ogg);
+        free(data);
         say(why, why_size, "has other than 1 or 2 channels, or no length");
         return 0;
     }
     r->samples = malloc((size_t)r->frames * (size_t)r->channels * sizeof(int16_t));
     if (r->samples == NULL) {
         stb_vorbis_close(ogg);
+        free(data);
         say(why, why_size, "is too large");
         return 0;
     }
@@ -294,6 +329,7 @@ static int load_ogg(KhdaysReplacement *r, const char *path, const KhdaysOriginal
         made += (uint64_t)got;
     }
     stb_vorbis_close(ogg);
+    free(data);
     r->frames = made;
     set_loop(r, comments.start, comments.start >= 0 && comments.length > 0 ? comments.start + comments.length : -1,
              original);
@@ -302,22 +338,93 @@ static int load_ogg(KhdaysReplacement *r, const char *path, const KhdaysOriginal
 
 /* --- The replacement ----------------------------------------------------------------- */
 
+/* A file above the PC's usual output rate is brought down to it as it loads, through a sinc of this many zero
+ * crossings each side under a Blackman window. */
+#define TOP_RATE 48000u
+#define SINC_ZEROS 16
+#define SINC_PI 3.14159265358979323846
+
+static double blackman(double t) /* t in [-1, 1] */
+{
+    return 0.42 + 0.5 * cos(SINC_PI * t) + 0.08 * cos(2.0 * SINC_PI * t);
+}
+
+/* Channel `c` of the file at `x` of its samples through the filter, `half` of them each side. */
+static double filtered(const KhdaysReplacement *r, double x, int64_t half, double ratio, int c)
+{
+    const int64_t center = (int64_t)floor(x);
+    double sum = 0.0, weights = 0.0;
+    for (int64_t k = center - half + 1; k <= center + half; ++k) {
+        if (k < 0 || (uint64_t)k >= r->frames) {
+            continue;
+        }
+        const double d = x - (double)k, u = d / ratio;
+        const double h = (u == 0.0 ? 1.0 : sin(SINC_PI * u) / (SINC_PI * u)) * blackman(d / (double)half);
+        sum += (double)r->samples[(uint64_t)k * (uint64_t)r->channels + (uint64_t)c] * h;
+        weights += h;
+    }
+    return weights != 0.0 ? sum / weights : 0.0;
+}
+
+static int16_t pcm16(double v)
+{
+    return (int16_t)(v > 32767.0 ? 32767 : v < -32768.0 ? -32768 : lrint(v));
+}
+
+/* A file above TOP_RATE brought down to it, so that what it holds above half that rate does not fold back as
+ * noise, its loop moved with it. 0 without the memory. */
+static int bring_down(KhdaysReplacement *r)
+{
+    const double ratio = (double)r->rate / TOP_RATE;
+    const uint64_t frames = (uint64_t)((double)r->frames / ratio);
+    const int64_t half = (int64_t)ceil(SINC_ZEROS * ratio); /* the filter's reach each side, in the file's samples */
+    const int channels = r->channels;
+    int16_t *out = frames > 0 ? malloc((size_t)(frames * (uint64_t)channels * sizeof(*out))) : NULL;
+    if (out == NULL) {
+        return frames == 0;
+    }
+    for (uint64_t j = 0; j < frames; ++j) {
+        for (int c = 0; c < channels; ++c) {
+            out[j * (uint64_t)channels + (uint64_t)c] = pcm16(filtered(r, (double)j * ratio, half, ratio, c));
+        }
+    }
+    free(r->samples);
+    r->samples = out;
+    r->frames = frames;
+    r->loop_start = (uint64_t)((double)r->loop_start / ratio + 0.5);
+    r->loop_end = (uint64_t)((double)r->loop_end / ratio + 0.5);
+    if (r->loop_end > frames) {
+        r->loop_end = frames;
+    }
+    if (r->looped && r->loop_start >= r->loop_end) {
+        r->looped = 0;
+    }
+    r->rate = TOP_RATE;
+    return 1;
+}
+
 int khdays_replacement_load(KhdaysReplacement *replacement, const char *path, const KhdaysOriginalLoop *original,
                             char *why, int why_size)
 {
     const char *dot = strrchr(path, '.');
+    int loaded;
     memset(replacement, 0, sizeof(*replacement));
     if (dot != NULL && strcmp(dot, ".wav") == 0) {
-        return load_wav(replacement, path, original, why, why_size);
+        loaded = load_wav(replacement, path, original, why, why_size);
+    } else if (dot != NULL && strcmp(dot, ".flac") == 0) {
+        loaded = load_flac(replacement, path, original, why, why_size);
+    } else if (dot != NULL && strcmp(dot, ".ogg") == 0) {
+        loaded = load_ogg(replacement, path, original, why, why_size);
+    } else {
+        say(why, why_size, "is not .wav, .flac or .ogg");
+        return 0;
     }
-    if (dot != NULL && strcmp(dot, ".flac") == 0) {
-        return load_flac(replacement, path, original, why, why_size);
+    if (loaded && replacement->rate > TOP_RATE && !bring_down(replacement)) {
+        khdays_replacement_free(replacement);
+        say(why, why_size, "has no memory to be brought down to the PC's rate");
+        return 0;
     }
-    if (dot != NULL && strcmp(dot, ".ogg") == 0) {
-        return load_ogg(replacement, path, original, why, why_size);
-    }
-    say(why, why_size, "is not .wav, .flac or .ogg");
-    return 0;
+    return loaded;
 }
 
 void khdays_replacement_free(KhdaysReplacement *replacement)
@@ -423,7 +530,7 @@ int khdays_replacement_write_wav(const char *path, uint32_t rate, int channels, 
     memcpy(h, "data", 4);
     put32(h + 4, (uint32_t)data_size);
     h += 8;
-    f = fopen(path, "wb");
+    f = open_utf8(path, "wb");
     if (f == NULL) {
         return 0;
     }

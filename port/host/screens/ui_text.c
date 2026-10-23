@@ -400,6 +400,22 @@ static const char *const texts[TXT_COUNT][5] = {
                                      "lisci. 2x è quattro volte il lavoro per la scheda grafica, 4x sedici.",
                                      "La imagen se hace tantas veces más grande y se reduce: los bordes del 3D salen "
                                      "suaves. 2x es cuatro veces el trabajo de la tarjeta gráfica, 4x dieciséis."},
+    [TXT_VIDEO_ANTIALIASING_WARNING] =
+        {"The internal resolution already draws the 3D at the window's size or larger: antialiasing "
+         "multiplies that work, so the game can slow down and use much more of the graphics card. "
+         "Leave it Off unless your card has power to spare.",
+         "La résolution interne dessine déjà la 3D à la taille de la fenêtre ou plus : l'anticrénelage "
+         "multiplie ce travail, le jeu peut ralentir et solliciter bien plus la carte graphique. "
+         "Laissez-le sur Non si votre carte n'a pas de puissance à revendre.",
+         "Die interne Auflösung zeichnet das 3D schon in Fenstergröße oder größer: die Kantenglättung "
+         "vervielfacht diese Arbeit, das Spiel kann langsamer werden und die Grafikkarte viel stärker "
+         "belasten. Lass sie auf Aus, wenn deine Karte keine Leistung übrig hat.",
+         "La risoluzione interna disegna già il 3D alla dimensione della finestra o più: l'antialiasing "
+         "moltiplica quel lavoro, il gioco può rallentare e impegnare molto di più la scheda grafica. "
+         "Lascialo su No se la tua scheda non ha potenza da vendere.",
+         "La resolución interna ya dibuja el 3D al tamaño de la ventana o mayor: el antialiasing "
+         "multiplica ese trabajo, y el juego puede ir más lento y exigir mucho más a la tarjeta gráfica. "
+         "Déjalo en No salvo que tu tarjeta vaya sobrada."},
     [TXT_VIDEO_SCREENS] = {"Screens", "Écrans", "Bildschirme", "Schermi", "Pantallas"},
     [TXT_VIDEO_SCREENS_TWO] = {"Two (DS)", "Deux (DS)", "Zwei (DS)", "Due (DS)", "Dos (DS)"},
     [TXT_VIDEO_SCREENS_ONE] = {"One", "Un", "Einer", "Uno", "Una"},
@@ -579,11 +595,16 @@ static const char *const texts[TXT_COUNT][5] = {
                                "La música y las voces de los vídeos."},
     [TXT_SOUND_DS_EXACT] = {"DS-exact sound", "Son exact de la DS", "Ton genau wie der DS", "Audio esatto del DS",
                             "Sonido exacto de la DS"},
-    [TXT_SOUND_DS_EXACT_NOTE] = {"The DS's own output: 32,728 Hz and 10 bits, as the handheld made it.",
-                                 "La sortie de la DS : 32 728 Hz et 10 bits, comme la console la produisait.",
-                                 "Die Ausgabe des DS: 32.728 Hz und 10 Bit, wie das Handheld sie erzeugte.",
-                                 "L'uscita del DS: 32.728 Hz e 10 bit, come la produceva la console.",
-                                 "La salida de la DS: 32.728 Hz y 10 bits, tal como la producía la consola."},
+    [TXT_SOUND_DS_EXACT_NOTE] = {"The DS's own output: 32,728 Hz and 10 bits, each sample held, as the handheld made "
+                                 "it. Off: the PC's, smoothed between the samples.",
+                                 "La sortie de la DS : 32 728 Hz et 10 bits, chaque échantillon maintenu, comme la "
+                                 "console la produisait. Désactivé : celle du PC, lissée entre les échantillons.",
+                                 "Die Ausgabe des DS: 32.728 Hz und 10 Bit, jedes Sample gehalten, wie das Handheld "
+                                 "sie erzeugte. Aus: die des PCs, zwischen den Samples geglättet.",
+                                 "L'uscita del DS: 32.728 Hz e 10 bit, ogni campione mantenuto, come la produceva la "
+                                 "console. Disattivato: quella del PC, levigata tra i campioni.",
+                                 "La salida de la DS: 32.728 Hz y 10 bits, cada muestra mantenida, tal como la "
+                                 "producía la consola. Desactivado: la del PC, suavizada entre las muestras."},
     [TXT_RESTORE_SOUND] = {"Restore the sound settings", "Rétablir le son", "Ton zurücksetzen", "Ripristina l'audio",
                            "Restablecer el sonido"},
     /* %d: the internal resolution asked for; %s: why it cannot be made. */
@@ -686,6 +707,34 @@ static const char *const texts[TXT_COUNT][5] = {
     [TXT_UPDATE_SKIP] = {"Don't remind me of this version", "Ne plus me le rappeler pour cette version",
                          "Für diese Version nicht mehr erinnern", "Non ricordarmelo per questa versione",
                          "No avisar de esta versión"},
+    [TXT_UPDATE_DETAIL_AUTO] = {"You have %s; %s is out. Download installs it: the game closes, the installer "
+                                "updates this copy, keeping your saves, settings and mods, and opens the game again.",
+                                "Vous avez la %s ; la %s est sortie. Télécharger l'installe : le jeu se ferme, "
+                                "l'installateur met à jour cette copie en gardant vos sauvegardes, réglages et mods, "
+                                "puis rouvre le jeu.",
+                                "Du hast %s; %s ist erschienen. Herunterladen installiert sie: Das Spiel schließt "
+                                "sich, das Installationsprogramm aktualisiert diese Kopie, behält deine Spielstände, "
+                                "Einstellungen und Mods und öffnet das Spiel wieder.",
+                                "Hai la %s; è uscita la %s. Scarica la installa: il gioco si chiude, il programma di "
+                                "installazione aggiorna questa copia conservando salvataggi, impostazioni e mod, e "
+                                "riapre il gioco.",
+                                "Tienes la %s; ha salido la %s. Descargar la instala: el juego se cierra, el "
+                                "instalador actualiza esta copia conservando tus partidas, ajustes y mods, y vuelve a "
+                                "abrir el juego."},
+    [TXT_UPDATE_GETTING] = {"Downloading %s", "Téléchargement de la %s", "%s wird heruntergeladen", "Download della %s",
+                            "Descargando la %s"},
+    [TXT_UPDATE_PROGRESS] = {"%d%% (%.1f of %.1f MB)", "%d %% (%.1f sur %.1f Mo)", "%d %% (%.1f von %.1f MB)",
+                             "%d%% (%.1f di %.1f MB)", "%d %% (%.1f de %.1f MB)"},
+    [TXT_UPDATE_FAILED] = {"The update could not be installed", "La mise à jour n'a pas pu être installée",
+                           "Das Update konnte nicht installiert werden",
+                           "Non è stato possibile installare l'aggiornamento", "No se pudo instalar la actualización"},
+    [TXT_UPDATE_FAILED_DETAIL] = {"Its page has the installer, to download and run by hand. (%s)",
+                                  "Sa page propose l'installateur, à télécharger et lancer vous-même. (%s)",
+                                  "Auf ihrer Seite liegt das Installationsprogramm, zum Herunterladen und Ausführen "
+                                  "von Hand. (%s)",
+                                  "La sua pagina ha il programma di installazione, da scaricare e avviare a mano. (%s)",
+                                  "Su página tiene el instalador, para descargarlo y ejecutarlo a mano. (%s)"},
+    [TXT_UPDATE_OPEN_PAGE] = {"Open its page", "Ouvrir sa page", "Seite öffnen", "Apri la pagina", "Abrir su página"},
     [TXT_SHOW_PING] = {"Show ping", "Afficher le ping", "Ping anzeigen", "Mostra ping", "Mostrar ping"},
     [TXT_SHOW_PING_NOTE] =
         {"In a multiplayer session, the round trip to each other player in milliseconds, in a "
@@ -797,6 +846,7 @@ static const char *const texts[TXT_COUNT][5] = {
                         "Taste oder Knopf drücken: %s", "Premi un tasto o un pulsante: %s",
                         "Pulsa una tecla o un botón: %s"},
     [TXT_MODS] = {"Mods", "Mods", "Mods", "Mod", "Mods"},
+    [TXT_MOD_CHOOSE] = {"Choose", "Choisir", "Auswählen", "Scegli", "Elegir"},
     [TXT_MOD_ENABLED] = {"Enabled", "Activé", "Aktiviert", "Attivo", "Activado"},
     [TXT_MOD_EARLIER] = {"Load earlier", "Charger avant", "Früher laden", "Carica prima", "Cargar antes"},
     [TXT_MOD_LATER] = {"Load later", "Charger après", "Später laden", "Carica dopo", "Cargar después"},
@@ -821,6 +871,15 @@ static const char *const texts[TXT_COUNT][5] = {
                            "In einem Raum gelten die Optionen des Hosts.",
                            "In una stanza contano le opzioni dell'host.",
                            "En una sala cuentan las opciones del anfitrión."},
+    [TXT_MOD_WRITES_MEMORY] = {"Writes in the game's memory: a mistake of its own can stop the game or reach a save.",
+                               "Écrit dans la mémoire du jeu : une erreur de sa part peut arrêter le jeu ou "
+                               "atteindre une sauvegarde.",
+                               "Schreibt in den Speicher des Spiels: ein Fehler darin kann das Spiel anhalten "
+                               "oder einen Spielstand erreichen.",
+                               "Scrive nella memoria del gioco: un suo errore può fermare il gioco o finire in un "
+                               "salvataggio.",
+                               "Escribe en la memoria del juego: un error suyo puede detener el juego o llegar a una "
+                               "partida guardada."},
     [TXT_AUTOSAVE] = {"Autosave", "Sauvegarde auto", "Automatisch speichern", "Salvataggio automatico", "Autoguardado"},
     [TXT_AUTOSAVE_FILE99] = {"In file 99", "Dans le fichier 99", "In Datei 99", "Nel file 99", "En el archivo 99"},
     [TXT_AUTOSAVE_PLAYED] = {"In the file being played", "Dans le fichier en cours", "In der gespielten Datei",
@@ -854,6 +913,31 @@ static const char *const texts[TXT_COUNT][5] = {
                              "pagine da tre, o i tre file del DS.",
                              "Las listas de guardado del propio juego (sin las pantallas HD): los 99 archivos del port "
                              "en páginas de tres, o los tres archivos de la DS."},
+    [TXT_STOP_MAGIC] = {"Stop magic", "Magie Stop", "Stopp-Magie", "Magia Stop", "Magia Paro"},
+    [TXT_STOP_MAGIC_NOTE] = {"The magic Days left unfinished, restored: its panels, its recipes at the moogle's and "
+                             "its casts. Off, the game is the DS's; a save's Stop panels are kept, unseen. In a room, "
+                             "every player must have it the same.",
+                             "La magie que Days a laissée inachevée, restaurée : ses panneaux, ses recettes chez le "
+                             "Mog et ses sorts. Désactivée, le jeu est celui de la DS ; les panneaux Stop d'une "
+                             "sauvegarde sont gardés, invisibles. Dans un salon, tous les joueurs doivent l'avoir "
+                             "pareil.",
+                             "Die Magie, die Days unvollendet ließ, wiederhergestellt: ihre Felder, ihre Rezepte beim "
+                             "Mogry und ihre Zauber. Aus ist das Spiel das des DS; Stopp-Felder eines Spielstands "
+                             "bleiben erhalten, unsichtbar. In einem Raum müssen es alle Spieler gleich haben.",
+                             "La magia che Days ha lasciato incompiuta, ripristinata: i suoi pannelli, le sue ricette "
+                             "dal moguri e i suoi incantesimi. Disattivata, il gioco è quello del DS; i pannelli Stop "
+                             "di un salvataggio restano, nascosti. In una stanza tutti i giocatori devono averla "
+                             "uguale.",
+                             "La magia que Days dejó sin terminar, restaurada: sus paneles, sus recetas en el moguri y "
+                             "sus lanzamientos. Desactivada, el juego es el de la DS; los paneles de Paro de una "
+                             "partida se conservan, ocultos. En una sala todos los jugadores deben tenerla igual."},
+    [TXT_STOP_MAGIC_ON] = {"Stop magic on", "Magie Stop activée", "Stopp-Magie an", "Magia Stop attiva",
+                           "Magia Paro activada"},
+    [TXT_STOP_MAGIC_OFF] = {"Stop magic off", "Magie Stop désactivée", "Stopp-Magie aus", "Magia Stop disattivata",
+                            "Magia Paro desactivada"},
+    [TXT_TAKES_NEXT_START] = {"Takes effect the next time the game starts.", "S'applique au prochain lancement du jeu.",
+                              "Gilt beim nächsten Start des Spiels.", "Vale al prossimo avvio del gioco.",
+                              "Se aplica la próxima vez que se inicie el juego."},
     [TXT_AUTOSAVE_DONE] = {"Autosaved: file %d", "Sauvegarde auto : fichier %d", "Automatisch gespeichert: Datei %d",
                            "Salvataggio automatico: file %d", "Autoguardado: archivo %d"},
     [TXT_AUTOSAVE_FAILED] = {"Autosave failed: file %d", "Échec de la sauvegarde auto : fichier %d",

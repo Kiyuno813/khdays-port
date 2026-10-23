@@ -44,11 +44,12 @@ TOOLS = [
     "tools/hd/theater_movies.py",
     "tools/hd/save_screen.py",
     "tools/hd/ddd_camp.py",
+    "tools/hd/kh2_fonts.py",
     "port/movies/hd_scenes.txt",  # theater_movies.py's scene map: the scene videos it makes
 ]
 # the installer's own (its tests and this script stay in the repository)
 INSTALLER_KEEP = ("build_installer.py", "pinned.json")
-NEVER = ("data", "saves", "mods")  # the game's and the player's: never packed (spec FR-003)
+NEVER = ("data", "saves", "mods")  # the game's and the player's: never packed
 
 
 def sha256(path: Path) -> str:
