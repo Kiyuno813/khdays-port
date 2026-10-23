@@ -341,7 +341,12 @@ settings.
    and the enemies a script puts one by one (the big ones) -- the chests
    (point, direction, contents' key) and the emblems (point). Each line says
    where its step is set ("area 11 · _i") and has a button showing its room
-   with every point drawn. "Save into the mod" writes `files/mi/mi/<number>`
+   with every point drawn. The room opens on the right and the mission stays
+   open in the left panel, under the catalog (both highlighted in it), so its
+   values can be changed while the room shows them; the room's own tools are
+   folded into "Map editor" above the mission (opened, a line between the two
+   sets their heights). Picking anything in the catalog lets the mission go;
+   picking the mission shows it on the right again, its unsaved changes kept. "Save into the mod" writes `files/mi/mi/<number>`
    and, when its chests or emblems changed, `files/mi/mi/trbox` / `evi`
    (every mission's, this one's set changed), each read back first; a notice
    says what was written. "Give the mission back to the game" removes them

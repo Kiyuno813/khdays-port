@@ -3246,7 +3246,7 @@ void draw_map_view(App& app, const Item& item) {
     ImGui::EndChild();
 }
 
-void draw_map_controls(App& app, const Item& item) {
+void draw_map_controls(App& app, const Item& item, bool panels) {
     if (m.item != app.selected || m.mod != app.mod)
         open(app);
     if (m.room == nullptr)
@@ -3264,6 +3264,8 @@ void draw_map_controls(App& app, const Item& item) {
         rebuild();
     else if (m.rep.edits_dirty)
         reapply_edits();
+    if (!panels)
+        return;
     draw_replace(app, item);
     draw_collision_editor(app);
     draw_details(app);

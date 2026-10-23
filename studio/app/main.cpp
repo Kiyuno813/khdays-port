@@ -99,6 +99,50 @@ bool split_line(const char* id, bool across, float length, float* at, float lo, 
     return ImGui::IsItemDeactivated() || reset;
 }
 
+// The mission kept open beside the shown room (See room), or null: let go once something else than a room
+// is selected.
+const Item* mission_beside(App& app) {
+    const int n = static_cast<int>(app.catalog.items.size());
+    const bool room = app.selected >= 0 && app.selected < n &&
+                      app.catalog.items[static_cast<std::size_t>(app.selected)].kind == Kind::room;
+    if (!room || app.mission_beside < 0 || app.mission_beside >= n ||
+        app.catalog.items[static_cast<std::size_t>(app.mission_beside)].kind != Kind::mission) {
+        app.mission_beside = -1;
+        return nullptr;
+    }
+    return &app.catalog.items[static_cast<std::size_t>(app.mission_beside)];
+}
+
+// Under the catalog while a mission's room is shown: "Map editor" (the room's tools, folded at first), then
+// the mission. Opened, the tools take the share of the height above a line the modder drags (this session).
+void draw_room_and_mission(App& app, const Item& room, const Item& mission) {
+    static float tools_share = 0.5f;
+    const bool tools = ImGui::CollapsingHeader(tr(app.language, S::map_tools_header));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tr(app.language, S::map_tools_hint));
+    if (!tools) {
+        draw_map_controls(app, room, false);  // its keys still work
+    } else {
+        const float height = ImGui::GetContentRegionAvail().y;
+        const float lowest = std::min(120.0f, 0.5f * (height - kSplitGrip));
+        const float highest = std::max(lowest, height - kSplitGrip - lowest);
+        float top = std::clamp(tools_share * height, lowest, highest);
+        ImGui::BeginChild("##map_tools", ImVec2(0, top), ImGuiChildFlags_None);
+        draw_map_controls(app, room);
+        ImGui::EndChild();
+        split_line("##map_tools_split", true, ImGui::GetContentRegionAvail().x, &top, lowest, highest, 0.5f * height,
+                   true);
+        if (height > 0.0f && ImGui::IsItemActive())
+            tools_share = std::clamp(top / height, 0.01f, 1.0f);
+    }
+    ImGui::Separator();
+    ImGui::PushID("mission_beside");
+    ImGui::BeginChild("##mission", ImVec2(0, 0), ImGuiChildFlags_None);
+    draw_mission_view(app, mission);
+    ImGui::EndChild();
+    ImGui::PopID();
+}
+
 void draw_frame(App& app, bool* settings_open, bool* themes_open, bool* console_open) {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
@@ -138,6 +182,7 @@ void draw_frame(App& app, bool* settings_open, bool* themes_open, bool* console_
     // what is wider than a panel can be scrolled to, never hidden past its edge
     ImGui::BeginChild("##left", ImVec2(left, avail.y - status_h), ImGuiChildFlags_Borders,
                       ImGuiWindowFlags_HorizontalScrollbar);
+    mission_beside(app);  // let go when no room is selected any more
     const Item* shown_room = app.selected >= 0 && app.selected < static_cast<int>(app.catalog.items.size()) &&
                                      app.catalog.items[static_cast<std::size_t>(app.selected)].kind == Kind::room
                                  ? &app.catalog.items[static_cast<std::size_t>(app.selected)]
@@ -161,10 +206,17 @@ void draw_frame(App& app, bool* settings_open, bool* themes_open, bool* console_
             app.settings.map_tree = std::clamp(top / height, 0.01f, 1.0f);
         if (let_go)
             save_now(app);
-        // the room's controls, unless the catalog picked something else this frame (shown from the next)
+        // the room's controls, unless the catalog picked something else this frame (shown from the next); with
+        // a mission kept beside it, the mission under the room's tools, which start folded away
         ImGui::BeginChild("##room_controls", ImVec2(0, 0), ImGuiChildFlags_None);
-        if (app.selected == room_selected)
-            draw_map_controls(app, *shown_room);
+        if (app.selected == room_selected) {
+            const Item* mission = mission_beside(app);
+            if (mission == nullptr) {
+                draw_map_controls(app, *shown_room);
+            } else {
+                draw_room_and_mission(app, *shown_room, *mission);
+            }
+        }
         ImGui::EndChild();
     }
     ImGui::EndChild();

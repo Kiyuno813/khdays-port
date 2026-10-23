@@ -55,6 +55,7 @@ void select_item(App& app, int index) {
         stop_sounds();
         app.clear_candidate();
         app.selected = index;
+        app.mission_beside = -1;  // a mission kept beside a room let go
     }
 }
 
@@ -106,11 +107,11 @@ void draw_tree_node(App& app, int n) {
             const int index = node.items[static_cast<std::size_t>(row)];
             const Item& item = app.catalog.items[static_cast<std::size_t>(index)];
             ImGui::PushID(index);
-            ImGui::TreeNodeEx("##leaf",
-                              ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen |
-                                  ImGuiTreeNodeFlags_SpanAvailWidth |
-                                  (app.selected == index ? ImGuiTreeNodeFlags_Selected : 0),
-                              "%s  %s", kind_tag(item.kind), leaf_name(item.key).c_str());
+            ImGui::TreeNodeEx(
+                "##leaf",
+                ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth |
+                    (app.selected == index || app.mission_beside == index ? ImGuiTreeNodeFlags_Selected : 0),
+                "%s  %s", kind_tag(item.kind), leaf_name(item.key).c_str());
             if (ImGui::IsItemClicked())
                 select_item(app, index);
             if (ImGui::IsItemHovered())
@@ -159,7 +160,7 @@ void draw_tree(App& app) {
         ImGui::TreeNodeEx("##leaf",
                           ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen |
                               ImGuiTreeNodeFlags_SpanAvailWidth |
-                              (app.selected == index ? ImGuiTreeNodeFlags_Selected : 0),
+                              (app.selected == index || app.mission_beside == index ? ImGuiTreeNodeFlags_Selected : 0),
                           "%s  %s", kind_tag(item.kind), item.key.c_str());
         if (ImGui::IsItemClicked())
             select_item(app, index);
@@ -243,7 +244,7 @@ void draw_browser(App& app) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             ImGui::PushID(index);
-            const bool selected = app.selected == index;
+            const bool selected = app.selected == index || app.mission_beside == index;
             if (ImGui::Selectable(kind_tag(item.kind), selected,
                                   ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) {
                 select_item(app, index);

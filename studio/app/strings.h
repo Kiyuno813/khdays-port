@@ -431,6 +431,8 @@ enum class S {
     map_camera_hint,
     map_fov,
     map_fov_hint,
+    map_tools_header,
+    map_tools_hint,
     kind_mission,
     mission_header,
     mission_hint,

@@ -69,6 +69,9 @@ struct App {
     std::vector<int> results;
     bool results_stale = true;
     int selected = -1;
+    // the mission whose "See room" button showed the room selected: kept open under the catalog, beside the
+    // room, until the catalog picks something else (-1: none)
+    int mission_beside = -1;
 
     // the replacement being prepared
     Candidate candidate;
@@ -146,7 +149,8 @@ void movie_view_leave();
 // The room shown written as a glTF where the person chose (its models, its
 // floor and walls, its textures), and told how to go on.
 void room_export_to(App& app, const std::filesystem::path& file);
-// A mission: its scripts, step by step.
+// A mission: its scripts, step by step. Also drawn under the catalog while one of its rooms is shown
+// (App::mission_beside), so `item` need not be the selected one.
 void draw_mission_view(App& app, const Item& item);
 // The mods' console: the running game's mods' log as it grows, and their reloads.
 void draw_mods_console(App& app, bool* open);
@@ -168,7 +172,8 @@ MissionOverlay& mission_overlay();
 void draw_map_view(App& app, const Item& item);
 // A room's controls (replacing it, editing its collision, what is picked, its lists), drawn in the left
 // panel under the catalog while a room is shown.
-void draw_map_controls(App& app, const Item& item);
+// `panels` false: only what runs while a room is shown (its Ctrl+Z / Ctrl+Y), its panels folded away.
+void draw_map_controls(App& app, const Item& item, bool panels = true);
 // A model file the modder offers for a game model (dropped, chosen, or the
 // one the mod holds), read as the port reads it.
 void model_offer(App& app, const Item& item, const std::filesystem::path& file);

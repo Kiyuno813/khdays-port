@@ -1381,6 +1381,13 @@ constexpr Row rows[] =
           nullptr, nullptr, nullptr,
           "El campo de visión de la cámara sobre el alto de la imagen, en grados (10 a 120). Arrastrar a la "
           "izquierda o a la derecha, o doble clic para escribir un valor. Clic derecho: vuelve a 35."}},
+        {S::map_tools_header, {"Map editor", nullptr, nullptr, nullptr, "Editor del mapa"}},
+        {S::map_tools_hint,
+         {"The room's own tools (replacing it, its collision, its markers), folded away while a mission is "
+          "edited beside it. Pick the mission in the catalog to see it on the right again.",
+          nullptr, nullptr, nullptr,
+          "Las herramientas de la sala (reemplazarla, su colisión, sus marcadores), plegadas mientras se edita "
+          "una misión a su lado. Elige la misión en el catálogo para volver a verla a la derecha."}},
         {S::kind_mission, {"Missions", "Missions", "Missionen", "Missioni", "Misiones"}},
         {S::mission_header,
          {"{0}: {1} entries, {2} scripts, {3} steps", "{0} : {1} entrées, {2} scripts, {3} étapes",

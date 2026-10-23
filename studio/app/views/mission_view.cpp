@@ -53,9 +53,14 @@ std::string lower_text(std::string s) {
     return s;
 }
 
+// The catalog's index of `item` (an item of app.catalog.items).
+int index_of(const App& app, const Item& item) {
+    return static_cast<int>(&item - app.catalog.items.data());
+}
+
 void open(App& app, const Item& item) {
     v = MissionView{};
-    v.item = app.selected;
+    v.item = index_of(app, item);
     const Mod* m = app.current_mod();
     v.mod = m != nullptr ? m->name : std::string();
     const auto slash = item.key.find_last_of('/');
@@ -246,10 +251,13 @@ void see_in_room(App& app, const World& world, const ScriptPlaces& p, int room) 
             }
         }
     }
+    // the room shown on the right, the mission kept open under the catalog
     const std::string key = world_path(world.code) + "/room/" + std::to_string(room);
     for (std::size_t i = 0; i < app.catalog.items.size(); ++i) {
-        if (app.catalog.items[i].kind == Kind::room && app.catalog.items[i].key == key)
+        if (app.catalog.items[i].kind == Kind::room && app.catalog.items[i].key == key) {
+            app.mission_beside = v.item;
             app.selected = static_cast<int>(i);
+        }
     }
 }
 
@@ -953,7 +961,7 @@ void draw_mission_view(App& app, const Item& item) {
     const Mod* m = app.current_mod();
     const std::string mod_name = m != nullptr ? m->name : std::string();
     // read again when another mission or mod is chosen (an unsaved change kept while the same is shown)
-    if (v.item != app.selected || v.mod != mod_name)
+    if (v.item != index_of(app, item) || v.mod != mod_name)
         open(app, item);
     const auto lang = app.language;
     if (!v.error.empty()) {
