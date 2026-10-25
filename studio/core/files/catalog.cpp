@@ -190,9 +190,44 @@ Catalog build_catalog(const CatalogSources& sources, std::atomic<int>* progress,
     std::sort(c.items.begin(), c.items.end(), [](const Item& a, const Item& b) {
         if (a.kind != b.kind)
             return a.kind < b.kind;
-        return a.key < b.key;
+        return natural_less(a.key, b.key);
     });
     return c;
+}
+
+bool natural_less(std::string_view a, std::string_view b) {
+    const auto digit = [](char c) { return c >= '0' && c <= '9'; };
+    std::size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        if (digit(a[i]) && digit(b[j])) {
+            std::size_t ie = i, je = j;
+            while (ie < a.size() && digit(a[ie]))
+                ++ie;
+            while (je < b.size() && digit(b[je]))
+                ++je;
+            // by value: leading zeros skipped, then the longer run is the larger number
+            std::size_t is = i, js = j;
+            while (is + 1 < ie && a[is] == '0')
+                ++is;
+            while (js + 1 < je && b[js] == '0')
+                ++js;
+            if (ie - is != je - js)
+                return ie - is < je - js;
+            const int c = a.substr(is, ie - is).compare(b.substr(js, je - js));
+            if (c != 0)
+                return c < 0;
+            if (ie - i != je - j)
+                return ie - i < je - j;  // the same value: fewer leading zeros first ("2" before "02")
+            i = ie;
+            j = je;
+            continue;
+        }
+        if (a[i] != b[j])
+            return static_cast<unsigned char>(a[i]) < static_cast<unsigned char>(b[j]);
+        ++i;
+        ++j;
+    }
+    return a.size() - i < b.size() - j;
 }
 
 std::vector<int> Catalog::search(std::string_view query, unsigned kinds) const {

@@ -214,8 +214,8 @@ TEST(a_kh2_room_sharing_no_points_is_placed_by_its_units) {
     const RoomAlignment a = kh2_alignment({}, room, kh2);
     CHECK(a.verdict == RoomAlignment::kh2_units);
     CHECK(a.place.scale == 0.01f);
-    CHECK(std::abs(a.place.move[0] + 20) < 1e-3f && std::abs(a.place.move[1] + 3) < 1e-3f &&
-          std::abs(a.place.move[2]) < 1e-3f);
+    // where KH2 has it: not moved or turned, whatever the room's middle and floor
+    CHECK(a.place.move == (std::array<float, 3>{0, 0, 0}) && a.place.turn == (std::array<float, 3>{0, 0, 0}));
 }
 
 TEST(markers_in_a_wall_or_over_nothing_are_named) {

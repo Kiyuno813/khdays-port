@@ -3,6 +3,7 @@
 // into the mod (core/texts/texts.h): what a modder translating or rewording the
 // game works in. The characters the game's font cannot draw are said.
 #include "../app.h"
+#include "../theme.h"
 
 #include "core/mods/mods.h"
 #include "core/files/paths.h"
@@ -134,7 +135,10 @@ void draw_text_view(App& app, const Item& item) {
         ImGui::TextColored(ImVec4(0.95f, 0.80f, 0.35f, 1), "%s", tr(lang, S::choose_mod_first));
     } else {
         ImGui::BeginDisabled(changed == 0);
-        if (ImGui::Button(fmt(lang, S::text_save, {std::to_string(changed)}).c_str())) {
+        push_save_colours();
+        const bool save = ImGui::Button(fmt(lang, S::text_save, {std::to_string(changed)}).c_str());
+        pop_save_colours();
+        if (save) {
             TextFile out = v.start;
             for (std::size_t l = 0; l < out.lists.size() && l < e.lists.size(); ++l) {
                 for (std::size_t k = 0; k < out.lists[l].size() && k < e.lists[l].size(); ++k) {

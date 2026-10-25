@@ -29,6 +29,12 @@ namespace {
 constexpr float kScrollUnit = 2147483648.0F;
 // A piece placed this far down waits for an event to be shown (y 1,000,000 seen).
 constexpr float kHiddenHeight = 100000.0F;
+// A cut-out surface's texels drawn from this alpha up (of 1.0), as the PS2's alpha test keeps them (noclip's
+// KH2 viewer cuts below 0.125 too): glTF's default of half cut texels the remastered pictures keep at alpha 88
+// (the PS2's 0x58 of 0x80: two thirds opaque) whole, the clock tower's columns and the lamp posts in tt08 among them.
+constexpr float kCutoff = 0.125F;
+// The least alpha drawn at kCutoff, as the port reads a cutoff (port/runtime/mods/models.cpp).
+constexpr std::uint8_t kLeastKept = 32;
 
 // Turns about x, then y, then z (radians) as a quaternion x y z w.
 std::array<float, 4> quaternion(const float x, const float y, const float z) {
@@ -70,7 +76,7 @@ const GsTexture* gs_of(const Part& part, int texture) {
 struct Picture final {
     std::string file;  // empty: none (vertex colours only)
     bool translucent = false;
-    bool cut = false;  // some texels clear (alpha under half): cut out, else drawn whole
+    bool cut = false;  // some texels clear (alpha under kCutoff): cut out, else drawn whole
     std::vector<std::string> frame_pictures;
     std::vector<std::array<int, 2>> frames;
     bool frames_loop = true;
@@ -181,7 +187,7 @@ private:
         pic.file = name_ + "_" + std::to_string(hd) + ".png";
         pic.translucent = texels_translucent(base.rgba.data(), base.rgba.size() / 4);
         for (std::size_t k = 3; k < base.rgba.size() && !pic.cut; k += 4)
-            pic.cut = base.rgba[k] < 128;
+            pic.cut = base.rgba[k] < kLeastKept;
         sink_(pic.file, base);
 
         const TextureAnimation* anim = nullptr;
@@ -284,6 +290,7 @@ private:
         mat.alpha_mode = !g.transparent    ? (pic.cut ? NeutralMesh::AlphaMode::mask : NeutralMesh::AlphaMode::opaque)
                          : pic.translucent ? NeutralMesh::AlphaMode::blend
                                            : NeutralMesh::AlphaMode::mask;
+        mat.alpha_cutoff = kCutoff;
         const GsTexture* gs = gs_of(part, g.texture);
         if (gs != nullptr) {
             mat.repeat = {gs->wrap_u == 0 || gs->wrap_u == 3, gs->wrap_v == 0 || gs->wrap_v == 3};

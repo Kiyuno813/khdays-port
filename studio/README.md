@@ -53,7 +53,8 @@ settings.
    them the tool offers to make them with the port. Search by name, filter by
    kind. "Folders" shows them as a tree -- each kind, then the folders of the
    game's files, each with how many it holds -- opened as you search and to
-   whatever another view selects; "List" shows them one under the other. The
+   whatever another view selects; "List" shows them one under the other. Both
+   count numbers by their value (MAP 2 before MAP 10). The
    choice is kept in the settings.
 2. **A mod.** Choose one of your mods or make a new one (top bar). "In this
    mod" lists its files, whether the port uses each (another mod's file may
@@ -255,7 +256,16 @@ settings.
      `graphics/mi/wd/wd_<code>#<entry>/mdl/<model>.gltf`; the change itself
      and your model stay in `studio/rooms/<code>/`, which is what to share
      (never the game's files). The port draws a replaced room whether HD
-     graphics are on or off.
+     graphics are on or off. Saving (and "Revert") runs beside the window,
+     several rooms made at once (up to six; a world of twelve KH2 rooms in
+     about 5 seconds), and only the rooms whose change or model files
+     changed since the last save made again (the others taken from what that
+     save wrote, `studio/rooms/<code>/save.cache` saying what each was made
+     from; a new build of the studio, another copy of the game or an output
+     file changed by hand makes them again), a bar over the picture and in
+     step 4 saying which room it is at; the
+     mod can't be switched until it is done. "Yours", "Original DS" and
+     "Both" over the picture switch what is shown.
    - **Exits, walls that open, surface tags.** The room's names -- its exits
      (`gate06`: walking into a face that carries it takes the exit), its walls
      that open (`col_wall..`) and the surface tags (`slide`: a slope that
@@ -553,7 +563,17 @@ room with: its background, skies and pieces (placed, moving as in KH2), its
 remastered pictures as PNG beside it, scrolling and changing textures; from
 `<folder>/original/map/<map>.map` and `<folder>/remastered/map/<map>.map/`
 as the collection's archives give them (`saves/collection/kh2` when not
-given). What it makes is Square Enix's work from the player's copy: theirs to
+given). A room made from a map is placed where KH2 has it (scale 0.01, not
+turned or moved: Days kept KH2's units and axes), unless the room's pair in
+`studio/data/kh2_rooms.txt` says where Days moved that map, or the room shares
+enough of its points to be lined up by them. Surfaces KH2 draws solid are cut out only where their texels are
+nearly clear (alpha under 0.125, the PS2's alpha test, `alphaCutoff` in the
+model), not at glTF's half: some remastered pictures keep solid walls at alpha
+88 of 255 (tt08's clock-tower columns and lamp posts), which a cut at half
+left see-through. A room made before this keeps the old cut: make it again
+("A KH2 room") and save the change. The window's preview draws a model's
+materials as the port does (opaque all opaque, a mask's texels whole or gone
+by its cutoff). What it makes is Square Enix's work from the player's copy: theirs to
 play with, not to share. The window's Maps view does the same from the room's
 Replace panel ("A KH2 room": the world's maps of the copy with their radar
 pictures, or one by its name); the collection's folder is in the settings

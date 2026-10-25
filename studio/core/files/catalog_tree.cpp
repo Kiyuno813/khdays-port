@@ -65,18 +65,18 @@ CatalogTree build_catalog_tree(const Catalog& catalog, const std::vector<int>& r
         if (node.parent >= 0)
             t.nodes[static_cast<std::size_t>(node.parent)].count += node.count;
     }
-    // order: kinds by kind, folders and leaves by name
+    // order: kinds by kind, folders and leaves by name, numbers by value (room 2 before room 10)
     for (auto& node : t.nodes) {
         std::sort(node.children.begin(), node.children.end(), [&](int a, int b) {
             const TreeNode& x = t.nodes[static_cast<std::size_t>(a)];
             const TreeNode& y = t.nodes[static_cast<std::size_t>(b)];
             if (x.kind != y.kind)
                 return x.kind < y.kind;
-            return x.name < y.name;
+            return natural_less(x.name, y.name);
         });
         std::sort(node.items.begin(), node.items.end(), [&](int a, int b) {
-            return leaf_name(catalog.items[static_cast<std::size_t>(a)].key) <
-                   leaf_name(catalog.items[static_cast<std::size_t>(b)].key);
+            return natural_less(leaf_name(catalog.items[static_cast<std::size_t>(a)].key),
+                                leaf_name(catalog.items[static_cast<std::size_t>(b)].key));
         });
     }
     return t;

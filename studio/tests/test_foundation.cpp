@@ -326,4 +326,13 @@ TEST(the_catalog_as_folders) {
           t.nodes[static_cast<std::size_t>(model)].name == "def.p.z");
     CHECK(t.nodes[static_cast<std::size_t>(model)].count == 3);
     CHECK(leaf_name("seqarc/COMMON_SYS/3") == "3");
+    // numbers by value, as a person counts
+    CHECK(natural_less("2", "10") && !natural_less("10", "2") && natural_less("9", "16"));
+    CHECK(natural_less("room/2", "room/10") && natural_less("wd_al", "wd_tt") && !natural_less("a", "a"));
+    CHECK(natural_less("tt2", "tt02") && !natural_less("tt02", "tt2") && natural_less("tt02", "tt3"));
+    CHECK(natural_less("x", "x1") && natural_less("ba", "bb") && natural_less("a9b", "a10a"));
+    std::vector<std::string> rooms = {"0", "1", "10", "11", "15", "16", "2", "3", "9"};
+    std::sort(rooms.begin(), rooms.end(),
+              [](const std::string& a, const std::string& b) { return natural_less(a, b); });
+    CHECK(rooms == std::vector<std::string>({"0", "1", "2", "3", "9", "10", "11", "15", "16"}));
 }

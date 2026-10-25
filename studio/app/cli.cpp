@@ -588,9 +588,7 @@ int replace_room(const fs::path& root, const std::vector<std::string>& args) {
                             pair->move[0], pair->move[1], pair->move[2]);
             } else if (a.verdict == RoomAlignment::kh2_units) {
                 r.place = a.place;
-                std::printf("placed by KH2's units (scale %g), its floor at the room's, the middles together: move "
-                            "%.2f %.2f %.2f\n",
-                            a.place.scale, a.place.move[0], a.place.move[1], a.place.move[2]);
+                std::printf("placed by KH2's units (scale %g), where KH2 has it (not moved)\n", a.place.scale);
             } else if (a.verdict == RoomAlignment::turned) {
                 r.place = a.place;
                 std::printf(

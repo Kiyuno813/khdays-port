@@ -139,6 +139,27 @@ ImVec4 theme_page() {
     return rgb(current->bg);
 }
 
+// The save buttons' green. Rosé Pine has no green of its own (its "pine" is a blue-green): a muted green of
+// its weight and darkness, under its text (0xe0def4, 4.6:1 at rest), pressed darker. The other palettes: a
+// bright green under near-black text (7.8:1), white being unreadable on it (2.2:1).
+struct SaveColours {
+    unsigned button, hovered, active, text;
+};
+constexpr SaveColours kRosePineSave{0x3a6b5f, 0x417868, 0x2f5a4f, 0xe0def4};
+constexpr SaveColours kBrightSave{0x34c759, 0x4fd872, 0x28a748, 0x0b1f10};
+
+void push_save_colours() {
+    const SaveColours& g = std::string(current->id) == "rose-pine-moon" ? kRosePineSave : kBrightSave;
+    ImGui::PushStyleColor(ImGuiCol_Button, rgb(g.button));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rgb(g.hovered));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, rgb(g.active));
+    ImGui::PushStyleColor(ImGuiCol_Text, rgb(g.text));
+}
+
+void pop_save_colours() {
+    ImGui::PopStyleColor(4);
+}
+
 void apply_theme(const std::string& id) {
     ImGuiStyle& s = ImGui::GetStyle();
     const float k = s.FontScaleDpi > 0.0f ? s.FontScaleDpi : 1.0f;

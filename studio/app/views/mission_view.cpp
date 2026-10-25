@@ -3,6 +3,7 @@
 // mod. "Scripts": its entries and scripts, each step by the function its group's table gives it and its
 // words as read; what a function does is shown only once read from the game.
 #include "../app.h"
+#include "../theme.h"
 
 #include "core/missions/command_meanings.h"
 #include "core/missions/command_names.h"
@@ -1495,7 +1496,10 @@ void draw_mission_view(App& app, const Item& item) {
         ImGui::TextColored(ImVec4(0.95f, 0.80f, 0.35f, 1), "%s", tr(lang, S::choose_mod_first));
     } else {
         ImGui::BeginDisabled(v.changes == 0);
-        if (ImGui::Button(fmt(lang, S::mission_save, {std::to_string(v.changes)}).c_str())) {
+        push_save_colours();
+        const bool save = ImGui::Button(fmt(lang, S::mission_save, {std::to_string(v.changes)}).c_str());
+        pop_save_colours();
+        if (save) {
             std::vector<std::string> written;
             std::string why;
             if (save_mission_edit(nitrofs(), m->dir, v.edit, &written, &why)) {

@@ -30,4 +30,9 @@ void apply_theme(const std::string& id);
 // The page behind the panels (the studio's main window), of the palette applied.
 ImVec4 theme_page();
 
+// A button that saves into the mod drawn green, for the palette applied: push before the button, pop after
+// (four colours: the button, under the pointer, pressed, and its text).
+void push_save_colours();
+void pop_save_colours();
+
 }  // namespace studio

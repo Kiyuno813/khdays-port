@@ -16,8 +16,8 @@ struct TreeNode {
     std::string name;           // the folder's (or the kind's, empty for a kind node: see `kind`)
     int kind = -1;              // a kind's node (top level, all kinds shown): its Kind
     int item = -1;              // the catalog item this node is, or -1
-    std::vector<int> children;  // nodes, folders first then by name
-    std::vector<int> items;     // leaves: catalog items, by name
+    std::vector<int> children;  // nodes, folders first then by name (natural_less: 2 before 10)
+    std::vector<int> items;     // leaves: catalog items, by name (natural_less)
     int count = 0;              // items in it and under it
     int parent = -1;
 };

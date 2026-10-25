@@ -12,6 +12,7 @@
 
 #include <array>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -99,8 +100,8 @@ struct RoomAlignment {
     // points, twice as many as it has as it is); `in_place` -- it lines up as
     // it is (3% or more: a room remade in the same place keeps some of the
     // game's points); `unrelated` -- it shares nothing worth saying
-    // `kh2_units` (a KH2 room sharing no points with the room): KH2's units as the game's, its floor under its
-    // middle at the height of the room's ground under the room's middle, the two middles together
+    // `kh2_units` (a KH2 room sharing no points with the room): KH2's units as the game's (scale 0.01), not
+    // turned or moved, where KH2 has it (Days kept KH2's axes)
     enum Verdict { turned, in_place, unrelated, kh2_units } verdict = unrelated;
 };
 RoomAlignment align_with_room(const std::vector<std::array<float, 3>>& room_points,
@@ -190,19 +191,30 @@ struct WorldOutcome {
 // Writes world `code`'s outputs from the mod's changes:
 // the archive (checked before it replaces anything) and the rooms' models;
 // with no change left, removes them. False with the reason; what was there stays.
+// How far a save (or a revert) has come, for a progress bar: `done` of `total` steps, and the step now --
+// the model files copied, a room's collision built, the world's archive written and checked, a room's models
+// written, the list of what was written. Called on the thread that saves.
+struct SaveProgress {
+    enum Stage { copying, building, archive, models, finishing } stage = copying;
+    int room = -1;  // the room of a `building` or `models` step
+    int done = 0, total = 1;
+};
+using SaveProgressFn = std::function<void(const SaveProgress&)>;
+
 bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesystem::path& graphics_dump,
                          const std::filesystem::path& mod_dir, const std::string& code, WorldOutcome* out,
-                         std::string* why);
+                         std::string* why, const SaveProgressFn& progress = {});
 
 // Saves a change: the model files (and their companions) copied beside it,
 // the change written, then the world's outputs.
 bool save_change(const std::filesystem::path& nitrofs, const std::filesystem::path& graphics_dump,
                  const std::filesystem::path& mod_dir, RoomReplacement r, const std::filesystem::path& model_source,
-                 const std::filesystem::path& collision_source_file, WorldOutcome* out, std::string* why);
+                 const std::filesystem::path& collision_source_file, WorldOutcome* out, std::string* why,
+                 const SaveProgressFn& progress = {});
 
 // Removes a room's change and the models it wrote, then writes its world again.
 bool revert_change(const std::filesystem::path& nitrofs, const std::filesystem::path& graphics_dump,
                    const std::filesystem::path& mod_dir, const std::string& code, int room, WorldOutcome* out,
-                   std::string* why);
+                   std::string* why, const SaveProgressFn& progress = {});
 
 }  // namespace studio

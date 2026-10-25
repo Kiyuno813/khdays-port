@@ -779,6 +779,8 @@ void test_room(const Bytes& file) {
     expect(moving->texture == "tt99_0.png" && moving->alpha_mode == khdays::assets::NeutralMesh::AlphaMode::mask &&
                !moving->repeat[0],
            "a cut-out, region-clamped material");
+    expect(one->alpha_cutoff < 0.2F && moving->alpha_cutoff < 0.2F,
+           "cut where the PS2's alpha test cuts (texels at two thirds kept), not at glTF's half");
     expect(std::fabs(moving->scroll[0] * 2147483648.0F - 4000.0F) < 0.01F &&
                std::fabs(moving->scroll[1] * 2147483648.0F + 4000.0F) < 0.01F,
            "scroll over the region");

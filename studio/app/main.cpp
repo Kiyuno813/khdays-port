@@ -159,6 +159,7 @@ void draw_frame(App& app, bool* settings_open, bool* themes_open, bool* console_
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoBringToFrontOnFocus);
     ImGui::PopStyleColor();
+    map_save_poll(app);
     draw_mod_bar(app);
     // the themes and the settings at the right end of the same row
     const ImGuiStyle& style = ImGui::GetStyle();

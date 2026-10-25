@@ -95,7 +95,11 @@ void draw_mod_bar(App& app) {
     ImGui::TextUnformatted(tr(app.language, S::mod_label));
     ImGui::SameLine();
     ImGui::SetNextItemWidth(320.0f * ImGui::GetStyle().FontScaleDpi);
-    if (ImGui::BeginCombo("##mod", current != nullptr ? current->name.c_str() : tr(app.language, S::mod_none))) {
+    ImGui::BeginDisabled(map_saving());  // the mod a room is being saved into stays chosen
+    const bool choosing =
+        ImGui::BeginCombo("##mod", current != nullptr ? current->name.c_str() : tr(app.language, S::mod_none));
+    ImGui::EndDisabled();
+    if (choosing) {
         for (int i = 0; i < static_cast<int>(app.mods.size()); ++i) {
             if (ImGui::Selectable(app.mods[static_cast<std::size_t>(i)].name.c_str(), i == app.mod)) {
                 app.clear_candidate();

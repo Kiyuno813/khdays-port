@@ -226,6 +226,10 @@ void draw_map_view(App& app, const Item& item);
 // panel under the catalog while a room is shown.
 // `panels` false: only what runs while a room is shown (its Ctrl+Z / Ctrl+Y), its panels folded away.
 void draw_map_controls(App& app, const Item& item, bool panels = true);
+// A room being saved into the mod (or given back to the game) on its own thread: the mod can't be switched.
+bool map_saving();
+// Takes what a finished save left (told, the room shown updated); each frame.
+void map_save_poll(App& app);
 // A model file the modder offers for a game model (dropped, chosen, or the
 // one the mod holds), read as the port reads it.
 void model_offer(App& app, const Item& item, const std::filesystem::path& file);

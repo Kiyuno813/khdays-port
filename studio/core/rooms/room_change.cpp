@@ -12,10 +12,16 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
+#include <functional>
+#include <mutex>
 #include <set>
 #include <sstream>
+#include <thread>
 
 namespace studio {
 
@@ -524,114 +530,6 @@ RoomAlignment align_with_room(const std::vector<std::array<float, 3>>& room_poin
     return best;
 }
 
-namespace {
-
-// A KH2 room's middle from above and its floor's height under it, from its still meshes but its skies
-// (its pieces may stand far off, waiting); false when it has none.
-bool kh2_floor_middle(const assets::ImportedModel& kh2, float* x, float* z, float* floor_y) {
-    std::array<float, 3> lo{1e30f, 1e30f, 1e30f}, hi{-1e30f, -1e30f, -1e30f};
-    struct Tri {
-        std::array<float, 3> a, b, c;
-    };
-    std::vector<Tri> ups;
-    for (const auto& mesh : kh2.model.meshes) {
-        if (mesh.sky)
-            continue;
-        auto still = [](const assets::NeutralVertex& v) { return v.joints[0] == 0 && v.weights[0] >= 0.999f; };
-        for (const auto& v : mesh.vertices) {
-            if (!still(v))
-                continue;
-            for (std::size_t c = 0; c < 3; ++c)
-                lo[c] = std::min(lo[c], v.position[c]), hi[c] = std::max(hi[c], v.position[c]);
-        }
-        for (std::size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
-            const auto& p = mesh.vertices[mesh.indices[i]];
-            const auto& q = mesh.vertices[mesh.indices[i + 1]];
-            const auto& r = mesh.vertices[mesh.indices[i + 2]];
-            if (!still(p) || !still(q) || !still(r))
-                continue;
-            const float e0[3] = {q.position[0] - p.position[0], q.position[1] - p.position[1],
-                                 q.position[2] - p.position[2]};
-            const float e1[3] = {r.position[0] - p.position[0], r.position[1] - p.position[1],
-                                 r.position[2] - p.position[2]};
-            const float n[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
-                                e0[0] * e1[1] - e0[1] * e1[0]};
-            const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-            if (len > 0 && n[1] / len > 0.9f)
-                ups.push_back({p.position, q.position, r.position});
-        }
-    }
-    if (lo[0] > hi[0])
-        return false;
-    const float kx = (lo[0] + hi[0]) / 2, kz = (lo[2] + hi[2]) / 2;
-    // the lowest upward triangle holding the middle, else the nearest one's middle
-    float y = lo[1];
-    bool held = false;
-    float nearest = 1e30f;
-    for (const auto& t : ups) {
-        auto side = [&](const std::array<float, 3>& u, const std::array<float, 3>& w) {
-            return (w[0] - u[0]) * (kz - u[2]) - (w[2] - u[2]) * (kx - u[0]);
-        };
-        const float s0 = side(t.a, t.b), s1 = side(t.b, t.c), s2 = side(t.c, t.a);
-        const bool inside = (s0 >= 0 && s1 >= 0 && s2 >= 0) || (s0 <= 0 && s1 <= 0 && s2 <= 0);
-        const float cy = (t.a[1] + t.b[1] + t.c[1]) / 3;
-        if (inside) {
-            if (!held || cy < y)
-                y = cy;
-            held = true;
-        } else if (!held) {
-            const float dx = (t.a[0] + t.b[0] + t.c[0]) / 3 - kx, dz = (t.a[2] + t.b[2] + t.c[2]) / 3 - kz;
-            if (dx * dx + dz * dz < nearest) {
-                nearest = dx * dx + dz * dz;
-                y = cy;
-            }
-        }
-    }
-    *x = kx;
-    *z = kz;
-    *floor_y = y;
-    return true;
-}
-
-// A game room's middle from above and its ground's height under it (the collision's 20.12 units): the
-// ground holding the middle, else the nearest ground's middle; false when the room has no faces.
-bool room_ground_middle(const RoomCollision& room, double* x, double* z, double* ground) {
-    double lo[3] = {1e30, 1e30, 1e30}, hi[3] = {-1e30, -1e30, -1e30};
-    for (const auto& list : room.faces) {
-        for (const auto& f : list) {
-            for (std::size_t v = 0; v < f.corners && v < 4; ++v) {
-                for (std::size_t c = 0; c < 3; ++c)
-                    lo[c] = std::min(lo[c], static_cast<double>(f.v[v][c])),
-                    hi[c] = std::max(hi[c], static_cast<double>(f.v[v][c]));
-            }
-        }
-    }
-    if (lo[0] > hi[0])
-        return false;
-    const double dx = (lo[0] + hi[0]) / 2, dz = (lo[2] + hi[2]) / 2;
-    double y = lo[1];
-    if (!ground_under(room, dx, dz, hi[1] + 4096.0, &y)) {
-        double best = 1e300;
-        for (const auto& g : room.faces[kGround]) {
-            double cx = 0, cy = 0, cz = 0;
-            for (std::size_t v = 0; v < g.corners && v < 4; ++v)
-                cx += g.v[v][0], cy += g.v[v][1], cz += g.v[v][2];
-            const double k = g.corners > 0 ? 1.0 / g.corners : 0;
-            const double d = (cx * k - dx) * (cx * k - dx) + (cz * k - dz) * (cz * k - dz);
-            if (d < best) {
-                best = d;
-                y = cy * k;
-            }
-        }
-    }
-    *x = dx;
-    *z = dz;
-    *ground = y;
-    return true;
-}
-
-}  // namespace
-
 RoomAlignment kh2_alignment(const std::vector<std::array<float, 3>>& room_points, const RoomCollision& room,
                             const assets::ImportedModel& kh2) {
     RoomAlignment a = align_with_room(room_points, kh2);
@@ -640,13 +538,10 @@ RoomAlignment kh2_alignment(const std::vector<std::array<float, 3>>& room_points
     a = RoomAlignment{};
     a.verdict = RoomAlignment::kh2_units;
     a.place.scale = 0.01f;  // KH2's units are a hundredth of the game's (the Usual Spot, room 0 of Twilight Town)
-    float kx = 0, kz = 0, floor_y = 0;
-    double dx = 0, dz = 0, ground = 0;
-    if (!kh2_floor_middle(kh2, &kx, &kz, &floor_y) || !room_ground_middle(room, &dx, &dz, &ground))
-        return a;
-    const float s = a.place.scale;
-    a.place.move = {static_cast<float>(dx / 4096.0) - s * kx, static_cast<float>(ground / 4096.0) - s * floor_y,
-                    static_cast<float>(dz / 4096.0) - s * kz};
+    // left where KH2 has it, not moved: Days kept KH2's units and axes, so a room made from a map is that map
+    // at 0 0 0 (Station Plaza's rooms on their KH2 map exactly). Matching the two middles and floors moved it by
+    // what the map holds past the room (its far streets, the hills), numbers that meant nothing.
+    (void)room;
     return a;
 }
 
@@ -1278,9 +1173,196 @@ std::vector<RoomWarning> sharing_warnings(const World& w, const RoomReplacement&
     return out;
 }
 
+namespace {
+
+// At most this many rooms made at once: each holds its model and its pictures decoded, hundreds of megabytes
+// for a KH2 map.
+constexpr unsigned kMostAtOnce = 6;
+
+// `work(i)` for every i below `n`, on up to kMostAtOnce threads (the calling one among them); returns when all
+// are done. What `work` throws is kept as the text of its index's failure in `failed` (empty: none).
+void each_at_once(std::size_t n, const std::function<void(std::size_t)>& work, std::vector<std::string>* failed) {
+    failed->assign(n, std::string());
+    std::atomic<std::size_t> next{0};
+    const auto run = [&] {
+        for (std::size_t i = next++; i < n; i = next++) {
+            try {
+                work(i);
+            } catch (const std::exception& e) {
+                (*failed)[i] = e.what();
+            } catch (...) {
+                (*failed)[i] = "an unknown failure";
+            }
+        }
+    };
+    const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+    const std::size_t threads = std::min<std::size_t>(n, std::min(cores, kMostAtOnce));
+    std::vector<std::thread> pool;
+    for (std::size_t k = 1; k < threads; ++k)
+        pool.emplace_back(run);
+    run();
+    for (auto& thread : pool)
+        thread.join();
+}
+
+// FNV-1a, 64 bits: what a save was made from, told apart.
+struct Fnv {
+    std::uint64_t h = 1469598103934665603ull;
+    Fnv& add(const void* data, std::size_t n) {
+        const auto* p = static_cast<const unsigned char*>(data);
+        for (std::size_t i = 0; i < n; ++i)
+            h = (h ^ p[i]) * 1099511628211ull;
+        return *this;
+    }
+    Fnv& add(const std::string& s) {
+        add(s.data(), s.size());
+        return add("\0", 1);
+    }
+    Fnv& add(std::uint64_t v) {
+        return add(&v, sizeof(v));
+    }
+};
+
+std::string hex(std::uint64_t v) {
+    char text[17];
+    std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(v));
+    return text;
+}
+
+std::string file_bytes(const std::filesystem::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+// A file's size and last change, "" when it is not there.
+std::string file_mark(const std::filesystem::path& file) {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(file, ec);
+    if (ec)
+        return {};
+    const auto when = std::filesystem::last_write_time(file, ec);
+    if (ec)
+        return {};
+    return std::to_string(size) + ":" + std::to_string(static_cast<long long>(when.time_since_epoch().count()));
+}
+
+}  // namespace
+
+// The program saving, by its file's size and last change: another build makes everything again (what a room
+// becomes is the program's doing too). Empty when it can't be told: nothing is kept then.
+#ifdef _WIN32
+extern "C"
+    __declspec(dllimport) unsigned long __stdcall GetModuleFileNameW(void* module, wchar_t* name, unsigned long size);
+#endif
+namespace {
+std::string program_mark() {
+    std::filesystem::path self;
+#ifdef _WIN32
+    std::wstring name(32768, L'\0');
+    const unsigned long n = GetModuleFileNameW(nullptr, name.data(), static_cast<unsigned long>(name.size()));
+    if (n == 0 || n >= name.size())
+        return {};
+    name.resize(n);
+    self = name;
+#else
+    std::error_code ec;
+    self = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (ec)
+        return {};
+#endif
+    return file_mark(self);
+}
+
+// What the last save of a world made each changed room and member from, and what it gave
+// (studio/rooms/<code>/save.cache): a room made from the same is taken from the last save's outputs.
+struct SaveCache {
+    struct Room {
+        std::string from, entry;  // what it was made from; its collision entry's hash in the archive written
+        bool untouched = false;
+        std::vector<std::string> lines;
+        std::string zone;  // the line of its model cut to the room, if any
+        bool has_zone = false;
+    };
+    struct Member {
+        std::string from;
+        std::vector<std::string> lines;
+        std::vector<std::pair<std::string, std::string>> files;  // relative to the mod, and their marks
+    };
+    std::map<int, Room> rooms;
+    std::map<int, Member> members;
+};
+constexpr const char* kCacheHeading = "khdays-studio save cache 1";
+
+std::filesystem::path cache_file(const std::filesystem::path& mod_dir, const std::string& code) {
+    return rooms_folder(mod_dir, code) / "save.cache";
+}
+
+// Split at tabs into at most `parts` (the last keeps the rest).
+std::vector<std::string> fields(const std::string& line, std::size_t parts) {
+    std::vector<std::string> out;
+    std::size_t from = 0;
+    while (out.size() + 1 < parts) {
+        const auto tab = line.find('\t', from);
+        if (tab == std::string::npos)
+            break;
+        out.push_back(line.substr(from, tab - from));
+        from = tab + 1;
+    }
+    out.push_back(line.substr(from));
+    return out;
+}
+
+// The cache of `code`'s last save when it was made by this program over this copy of the world (`stamp`);
+// empty otherwise.
+SaveCache read_cache(const std::filesystem::path& mod_dir, const std::string& code, const std::string& stamp) {
+    SaveCache c;
+    std::istringstream in(file_bytes(cache_file(mod_dir, code)));
+    std::string line;
+    if (!std::getline(in, line) || line != kCacheHeading || !std::getline(in, line) || line != "stamp\t" + stamp)
+        return c;
+    while (std::getline(in, line)) {
+        const auto f = fields(line, 2);
+        if (f.size() < 2)
+            continue;
+        const std::string& kind = f[0];
+        if (kind == "room") {
+            const auto r = fields(f[1], 4);
+            if (r.size() == 4)
+                c.rooms[std::atoi(r[0].c_str())] = {r[1], r[3], r[2] == "1", {}, {}, false};
+        } else if (kind == "rline" || kind == "zone") {
+            const auto r = fields(f[1], 2);
+            if (r.size() == 2 && c.rooms.count(std::atoi(r[0].c_str())) != 0) {
+                SaveCache::Room& room = c.rooms[std::atoi(r[0].c_str())];
+                if (kind == "rline") {
+                    room.lines.push_back(r[1]);
+                } else {
+                    room.zone = r[1];
+                    room.has_zone = true;
+                }
+            }
+        } else if (kind == "member") {
+            const auto r = fields(f[1], 2);
+            if (r.size() == 2)
+                c.members[std::atoi(r[0].c_str())].from = r[1];
+        } else if (kind == "mline" || kind == "mfile") {
+            const auto r = fields(f[1], kind == "mline" ? 2 : 3);
+            const int m = std::atoi(r[0].c_str());
+            if (c.members.count(m) == 0)
+                continue;
+            if (kind == "mline" && r.size() == 2)
+                c.members[m].lines.push_back(r[1]);
+            else if (kind == "mfile" && r.size() == 3)
+                c.members[m].files.emplace_back(r[2], r[1]);
+        }
+    }
+    return c;
+}
+
+}  // namespace
+
 bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesystem::path& graphics_dump,
                          const std::filesystem::path& mod_dir, const std::string& code, WorldOutcome* out,
-                         std::string* why) {
+                         std::string* why, const SaveProgressFn& progress) {
     WorldOutcome o;
     World w;
     if (!load_world(nitrofs, code, &w, why))
@@ -1297,6 +1379,7 @@ bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesy
         for (const auto& file : before)
             remove_written(mod_dir, file);
         std::filesystem::remove(written_list(mod_dir, code), ec);
+        std::filesystem::remove(cache_file(mod_dir, code), ec);
         std::filesystem::remove(rooms_folder(mod_dir, code), ec);  // only when empty
         o.removed = true;
         o.lines.push_back(world_path(code) + ": no room replaced; its outputs removed");
@@ -1305,64 +1388,170 @@ bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesy
         return true;
     }
 
-    // the collisions
+    // what the last save made, kept when it was made by this program over this copy of the world: each room
+    // made from the same change and model files as then is taken from the last save's outputs, not made again
+    const std::string program = program_mark();
+    const std::string stamp = program.empty()
+                                  ? std::string()
+                                  : hex(Fnv().add(program).add(file_bytes(nitrofs / path_u8(world_path(code)))).h);
+    const SaveCache cache = stamp.empty() ? SaveCache{} : read_cache(mod_dir, code, stamp);
+    World last;  // the archive the last save wrote, its collisions taken back
+    bool has_last = false;
+    if (!cache.rooms.empty()) {
+        const auto bytes = file_bytes(archive);
+        std::string unused;
+        has_last =
+            !bytes.empty() && parse_world(std::vector<std::uint8_t>(bytes.begin(), bytes.end()), code, &last, &unused);
+    }
+    std::vector<std::string> made_from(changes.size());  // per change: its file and its models' files
+    for (std::size_t i = 0; i < changes.size(); ++i) {
+        Fnv f;
+        f.add(file_bytes(change_file(mod_dir, code, changes[i].room)));
+        std::vector<std::pair<std::string, std::string>> files;
+        const auto folder = change_models(mod_dir, code, changes[i].room);
+        for (auto it = std::filesystem::recursive_directory_iterator(folder, ec);
+             !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+            if (it->is_regular_file(ec))
+                files.emplace_back(u8(std::filesystem::relative(it->path(), folder, ec)), file_mark(it->path()));
+        }
+        ec.clear();
+        std::sort(files.begin(), files.end());
+        for (const auto& [name, mark] : files)
+            f.add(name).add(mark);
+        made_from[i] = hex(f.h);
+    }
+    const auto index_of = [&](const RoomReplacement* r) { return static_cast<std::size_t>(r - changes.data()); };
+    const auto entry_hash = [](const std::vector<std::uint8_t>& data) {
+        return hex(Fnv().add(data.data(), data.size()).h);
+    };
+
+    // what each changed room's models become (the modder's, nothing, or the game's), and the steps: a room's
+    // collision each, the archive, a member's models each, the list of what was written
+    std::map<int, std::pair<const RoomReplacement*, ObjectUse>> use_of;
+    for (const auto& r : changes) {
+        for (const auto& [member, use] : object_uses(w.rooms[static_cast<std::size_t>(r.room)], r))
+            use_of[member] = {&r, use};
+    }
+    SaveProgress step;
+    step.total = static_cast<int>(changes.size()) + 2;
+    for (const auto& [member, change] : use_of)
+        step.total += change.second == ObjectUse::keep ? 0 : 1;
+    std::mutex stepping;  // the rooms' threads report too
+    const auto report = [&](SaveProgress::Stage stage, int room) {
+        std::lock_guard lock(stepping);
+        step.stage = stage;
+        step.room = room;
+        if (progress)
+            progress(step);
+        ++step.done;
+    };
+
+    // the collisions: each room's made at once (they share nothing), then taken in the changes' order -- the
+    // lines, the first failure and two rooms on one collision as one room after another would find them
+    struct MadeCollision {
+        bool untouched = false;  // the game's own, nothing moved: nothing to write
+        bool kept = false;       // the game's own, markers moved
+        bool reused = false;     // taken from the last save
+        int member = -1;
+        std::vector<std::uint8_t> bytes;
+        std::vector<std::string> lines;
+        std::string problem;
+    };
+    std::vector<MadeCollision> made(changes.size());
+    std::vector<std::string> thrown;
+    each_at_once(
+        changes.size(),
+        [&](std::size_t i) {
+            const RoomReplacement& r = changes[i];
+            MadeCollision& c = made[i];
+            report(SaveProgress::building, r.room);
+            const std::string room = "room " + std::to_string(r.room) + ": ";
+            // made from the same as the last save: its collision taken from the archive that save wrote
+            if (const auto was = cache.rooms.find(r.room);
+                was != cache.rooms.end() && was->second.from == made_from[i]) {
+                const int member = w.rooms[static_cast<std::size_t>(r.room)].collision_member;
+                if (was->second.untouched) {
+                    c.untouched = c.reused = true;
+                    c.lines = was->second.lines;
+                    return;
+                }
+                if (has_last && member >= 0 && static_cast<std::size_t>(member) < last.archive.entries.size() &&
+                    entry_hash(last.archive.entries[static_cast<std::size_t>(member)].data) == was->second.entry) {
+                    c.member = member;
+                    c.bytes = last.archive.entries[static_cast<std::size_t>(member)].data;
+                    c.kept = r.keep_collision && r.edits.empty();
+                    c.lines = was->second.lines;
+                    c.reused = true;
+                    return;
+                }
+            }
+            if (r.keep_collision && r.markers.empty() && r.edits.empty()) {
+                c.untouched = true;
+                c.lines.push_back(room + "the game's own grounds, walls and ceilings kept");
+                return;
+            }
+            c.member = w.rooms[static_cast<std::size_t>(r.room)].collision_member;
+            if (r.keep_collision) {
+                // the game's own floor and walls, its markers moved: only those bytes change
+                RoomCollision kept_room;
+                std::size_t moved = 0;
+                if (!kept_collision(w, r, &kept_room, &moved, &c.problem))
+                    return;
+                c.bytes = write_collision(kept_room);
+                c.kept = r.edits.empty();  // else checked as an edited collision
+                c.lines.push_back(
+                    room + "the game's own grounds, walls and ceilings kept" +
+                    (r.edits.empty() ? std::string()
+                                     : ", edited (" + std::to_string(kept_room.faces[kGround].size()) + " grounds, " +
+                                           std::to_string(kept_room.faces[kWall].size()) + " walls, " +
+                                           std::to_string(kept_room.faces[kCeiling].size()) + " ceilings)") +
+                    ", " + std::to_string(moved) + " of " + std::to_string(r.markers.size()) + " markers moved");
+                for (const int other : rooms_sharing(w, r.room, c.member, true))
+                    c.lines.push_back(room + warning_text({RoomWarning::collision_shared, {std::to_string(other)}}));
+                return;
+            }
+            BuiltRoom built;
+            if (!build_room(w, mod_dir, r, &built, &c.problem))
+                return;
+            c.bytes = write_collision(built.collision);
+            c.lines.push_back(room + std::to_string(built.report.faces[kGround]) + " grounds, " +
+                              std::to_string(built.report.faces[kWall]) + " walls, " +
+                              std::to_string(built.report.faces[kCeiling]) + " ceilings, " +
+                              std::to_string(built.report.nodes) + " nodes, " + std::to_string(built.report.bytes) +
+                              " bytes");
+            for (const auto& warning : built.warnings)
+                c.lines.push_back(room + warning_text(warning));
+        },
+        &thrown);
+    std::vector<std::vector<std::string>> room_lines(changes.size());  // for the cache
+    for (std::size_t i = 0; i < changes.size(); ++i)
+        room_lines[i] = made[i].lines;
     std::map<int, std::vector<std::uint8_t>> collisions;
     std::map<int, int> collision_of;  // member -> the room that made it
     std::set<int> kept;               // members that are the game's own collision, markers moved
-    for (const auto& r : changes) {
-        if (r.keep_collision) {
-            if (r.markers.empty() && r.edits.empty()) {
-                o.lines.push_back("room " + std::to_string(r.room) +
-                                  ": the game's own grounds, walls and ceilings kept");
-                continue;
-            }
-            // the game's own floor and walls, its markers moved: only those bytes change
-            RoomCollision kept_room;
-            std::size_t moved = 0;
-            std::string problem;
-            if (!kept_collision(w, r, &kept_room, &moved, &problem))
-                return fail_with(why, "room " + std::to_string(r.room) + ": " + problem);
-            const int member = w.rooms[static_cast<std::size_t>(r.room)].collision_member;
-            if (collision_of.count(member) != 0) {
-                return fail_with(why, "rooms " + std::to_string(collision_of[member]) + " and " +
+    for (std::size_t i = 0; i < changes.size(); ++i) {
+        const RoomReplacement& r = changes[i];
+        MadeCollision& c = made[i];
+        if (!thrown[i].empty())
+            c.problem = thrown[i];
+        if (!c.problem.empty())
+            return fail_with(why, "room " + std::to_string(r.room) + ": " + c.problem);
+        if (!c.untouched) {
+            if (collision_of.count(c.member) != 0) {
+                return fail_with(why, "rooms " + std::to_string(collision_of[c.member]) + " and " +
                                           std::to_string(r.room) + " share one collision: replace only one of them");
             }
-            collision_of[member] = r.room;
-            collisions[member] = write_collision(kept_room);
-            if (r.edits.empty())
-                kept.insert(member);  // else checked as an edited collision
-            o.lines.push_back(
-                "room " + std::to_string(r.room) + ": the game's own grounds, walls and ceilings kept" +
-                (r.edits.empty() ? std::string()
-                                 : ", edited (" + std::to_string(kept_room.faces[kGround].size()) + " grounds, " +
-                                       std::to_string(kept_room.faces[kWall].size()) + " walls, " +
-                                       std::to_string(kept_room.faces[kCeiling].size()) + " ceilings)") +
-                ", " + std::to_string(moved) + " of " + std::to_string(r.markers.size()) + " markers moved");
-            for (const int other : rooms_sharing(w, r.room, member, true))
-                o.lines.push_back("room " + std::to_string(r.room) + ": " +
-                                  warning_text({RoomWarning::collision_shared, {std::to_string(other)}}));
-            continue;
+            collision_of[c.member] = r.room;
+            collisions[c.member] = std::move(c.bytes);
+            if (c.kept)
+                kept.insert(c.member);
         }
-        BuiltRoom b;
-        std::string problem;
-        if (!build_room(w, mod_dir, r, &b, &problem))
-            return fail_with(why, "room " + std::to_string(r.room) + ": " + problem);
-        const int member = w.rooms[static_cast<std::size_t>(r.room)].collision_member;
-        if (collision_of.count(member) != 0) {
-            return fail_with(why, "rooms " + std::to_string(collision_of[member]) + " and " + std::to_string(r.room) +
-                                      " share one collision: replace only one of them");
-        }
-        collision_of[member] = r.room;
-        collisions[member] = write_collision(b.collision);
-        o.lines.push_back("room " + std::to_string(r.room) + ": " + std::to_string(b.report.faces[kGround]) +
-                          " grounds, " + std::to_string(b.report.faces[kWall]) + " walls, " +
-                          std::to_string(b.report.faces[kCeiling]) + " ceilings, " + std::to_string(b.report.nodes) +
-                          " nodes, " + std::to_string(b.report.bytes) + " bytes");
-        for (const auto& warning : b.warnings)
-            o.lines.push_back("room " + std::to_string(r.room) + ": " + warning_text(warning));
+        for (auto& line : c.lines)
+            o.lines.push_back(std::move(line));
     }
 
     // the archive, checked before it replaces anything: the gate models' points moved too
+    report(SaveProgress::archive, -1);
     World moved = w;
     for (const auto& r : changes)
         apply_gate_points(&moved, r);
@@ -1418,57 +1607,144 @@ bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesy
     std::set<std::string> now{"files/" + world_path(code)};
     o.lines.push_back(u8(archive) + " written");
 
-    // the models: the modder's, nothing, or the game's
-    std::map<int, std::pair<const RoomReplacement*, ObjectUse>> use_of;
-    for (const auto& r : changes) {
-        for (const auto& [member, use] : object_uses(w.rooms[static_cast<std::size_t>(r.room)], r))
-            use_of[member] = {&r, use};
-    }
-    std::map<std::string, assets::ImportedModel> placed;  // by change
+    // the models: the modder's, nothing, or the game's. A change's members together (they share its placed
+    // model), the changes at once; then taken in the members' order -- the lines and the first failure as one
+    // member after another would find them
+    struct MemberOut {
+        int member = -1;
+        const RoomReplacement* r = nullptr;
+        ObjectUse use = ObjectUse::keep;
+        bool no_models = false;  // the dump has none of it
+        std::string from;        // what it was made from (its change's, its use, its keys)
+        std::vector<std::string> lines;
+        std::set<std::string> written;
+        std::string problem;
+    };
+    struct ChangeOut {
+        std::vector<std::size_t> members;  // into `outs`, in the members' order
+        bool placed_tried = false;
+        std::string zone_line, problem;  // of placing its model
+    };
+    std::vector<MemberOut> outs;
+    std::map<std::string, std::size_t> change_index;  // by world/room
+    std::vector<ChangeOut> change_outs;
     for (const auto& [member, change] : use_of) {
-        const RoomReplacement& r = *change.first;
         if (change.second == ObjectUse::keep)
             continue;
-        const auto keys = member_models(graphics_dump, code, member);
-        if (keys.empty()) {
-            return fail_with(why, "the graphics dump has no model of " + member_label(code, member) +
+        const std::string id = change.first->world + "/" + std::to_string(change.first->room);
+        auto found = change_index.find(id);
+        if (found == change_index.end()) {
+            found = change_index.emplace(id, change_outs.size()).first;
+            change_outs.emplace_back();
+        }
+        change_outs[found->second].members.push_back(outs.size());
+        MemberOut m;
+        m.member = member;
+        m.r = change.first;
+        m.use = change.second;
+        outs.push_back(std::move(m));
+    }
+    each_at_once(
+        change_outs.size(),
+        [&](std::size_t c) {
+            ChangeOut& change = change_outs[c];
+            assets::ImportedModel placed;
+            for (const std::size_t at : change.members) {
+                MemberOut& m = outs[at];
+                const RoomReplacement& r = *m.r;
+                report(SaveProgress::models, r.room);
+                const auto keys = member_models(graphics_dump, code, m.member);
+                if (keys.empty()) {
+                    m.no_models = true;
+                    return;  // as one after another: nothing past this member
+                }
+                Fnv f;
+                f.add(made_from[index_of(&r)]).add(static_cast<std::uint64_t>(m.use));
+                for (const auto& key : keys)
+                    f.add(key);
+                m.from = hex(f.h);
+                // made from the same as the last save, its files still as that save left them: kept
+                const auto was = cache.members.find(m.member);
+                const auto room_was = cache.rooms.find(r.room);
+                if (was != cache.members.end() && was->second.from == m.from &&
+                    (m.use != ObjectUse::model || r.zone < 0 ||
+                     (room_was != cache.rooms.end() && room_was->second.has_zone))) {
+                    bool same = true;
+                    for (const auto& [file, mark] : was->second.files)
+                        same = same && file_mark(mod_dir / path_u8(file)) == mark;
+                    if (same) {
+                        m.lines = was->second.lines;
+                        for (const auto& [file, mark] : was->second.files)
+                            m.written.insert(file);
+                        if (m.use == ObjectUse::model && r.zone >= 0 && !change.placed_tried)
+                            change.zone_line = room_was->second.zone;
+                        continue;
+                    }
+                }
+                if (m.use == ObjectUse::model && !change.placed_tried) {
+                    change.placed_tried = true;
+                    if (!placed_model(change_models(mod_dir, r.world, r.room) / path_u8(r.model), r.place, &placed,
+                                      &change.problem))
+                        return;
+                    if (r.zone >= 0) {
+                        // only what lies around the room
+                        const WorldRoom& room = w.rooms[static_cast<std::size_t>(r.room)];
+                        const auto& data = w.archive.entries[static_cast<std::size_t>(room.collision_member)].data;
+                        RoomCollision floor;
+                        std::string problem;
+                        if (data.empty() || !parse_collision(data, &floor, &problem)) {
+                            change.problem = "room " + std::to_string(r.room) + ": no floor to cut the model to";
+                            return;
+                        }
+                        change.zone_line = "room " + std::to_string(r.room) + ": " +
+                                           std::to_string(cut_to_zone(&placed, room_zone(floor, r.zone))) +
+                                           " triangles away from the room left out";
+                    }
+                }
+                const assets::ImportedModel nothing;
+                const assets::ImportedModel& model = m.use == ObjectUse::model ? placed : nothing;
+                for (const auto& key : keys) {
+                    if (!write_room_model(mod_dir, key, model, &m.written, &m.problem))
+                        return;
+                    m.lines.push_back(key + ".gltf written" + (m.use == ObjectUse::hide ? " (nothing drawn)" : ""));
+                }
+            }
+        },
+        &thrown);
+    std::vector<bool> zone_said(change_outs.size(), false);
+    for (std::size_t c = 0; c < change_outs.size(); ++c) {
+        if (!thrown[c].empty())
+            change_outs[c].problem = thrown[c];
+    }
+    for (std::size_t at = 0; at < outs.size(); ++at) {
+        MemberOut& m = outs[at];
+        const std::size_t c = change_index.at(m.r->world + "/" + std::to_string(m.r->room));
+        const ChangeOut& change = change_outs[c];
+        if (m.no_models) {
+            return fail_with(why, "the graphics dump has no model of " + member_label(code, m.member) +
                                       ": make the dump first");
         }
-        assets::ImportedModel model;
-        if (change.second == ObjectUse::model) {
-            const std::string id = r.world + "/" + std::to_string(r.room);
-            auto it = placed.find(id);
-            if (it == placed.end()) {
-                assets::ImportedModel m;
-                if (!placed_model(change_models(mod_dir, r.world, r.room) / path_u8(r.model), r.place, &m, why))
-                    return false;
-                if (r.zone >= 0) {
-                    // only what lies around the room
-                    const WorldRoom& room = w.rooms[static_cast<std::size_t>(r.room)];
-                    const auto& data = w.archive.entries[static_cast<std::size_t>(room.collision_member)].data;
-                    RoomCollision floor;
-                    std::string problem;
-                    if (data.empty() || !parse_collision(data, &floor, &problem))
-                        return fail_with(why, "room " + std::to_string(r.room) + ": no floor to cut the model to");
-                    o.lines.push_back("room " + std::to_string(r.room) + ": " +
-                                      std::to_string(cut_to_zone(&m, room_zone(floor, r.zone))) +
-                                      " triangles away from the room left out");
-                }
-                it = placed.emplace(id, std::move(m)).first;
-            }
-            model = it->second;
+        if (m.use == ObjectUse::model && !zone_said[c]) {
+            zone_said[c] = true;
+            if (!change.problem.empty())
+                return fail_with(why, change.problem);
+            if (!change.zone_line.empty())
+                o.lines.push_back(change.zone_line);
+        } else if (!change.problem.empty() && m.lines.empty() && m.problem.empty()) {
+            return fail_with(why, change.problem);  // a member after a failed one: never made
         }
-        for (const auto& key : keys) {
-            if (!write_room_model(mod_dir, key, model, &now, why))
-                return false;
-            o.lines.push_back(key + ".gltf written" + (change.second == ObjectUse::hide ? " (nothing drawn)" : ""));
-        }
+        if (!m.problem.empty())
+            return fail_with(why, m.problem);
+        now.insert(m.written.begin(), m.written.end());
+        for (const auto& line : m.lines)
+            o.lines.push_back(line);  // copied: kept for the cache
     }
     // what an earlier save wrote and this one did not: removed; the list kept
     for (const auto& file : before) {
         if (now.count(file) == 0)
             remove_written(mod_dir, file);
     }
+    report(SaveProgress::finishing, -1);
     std::string list;
     for (const auto& file : now)
         list += file + "\n";
@@ -1482,6 +1758,50 @@ bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesy
         [](const std::filesystem::path&) { return std::string(); });
     if (!saved.ok)
         return fail_with(why, saved.why);
+    // what this save made each room and member from, for the next (a cache: without it all is made again)
+    if (!stamp.empty()) {
+        World written_world;
+        std::string unused;
+        const bool readable = parse_world(bytes, code, &written_world, &unused);
+        std::ostringstream c;
+        c << kCacheHeading << "\nstamp\t" << stamp << "\n";
+        for (std::size_t i = 0; i < changes.size(); ++i) {
+            const RoomReplacement& r = changes[i];
+            const int member = w.rooms[static_cast<std::size_t>(r.room)].collision_member;
+            const bool untouched = r.keep_collision && r.markers.empty() && r.edits.empty();
+            std::string entry = "-";
+            if (!untouched && readable && member >= 0 &&
+                static_cast<std::size_t>(member) < written_world.archive.entries.size())
+                entry = entry_hash(written_world.archive.entries[static_cast<std::size_t>(member)].data);
+            c << "room\t" << r.room << "\t" << made_from[i] << "\t" << (untouched ? 1 : 0) << "\t" << entry << "\n";
+            for (const auto& line : room_lines[i])
+                c << "rline\t" << r.room << "\t" << line << "\n";
+        }
+        for (std::size_t k = 0; k < change_outs.size(); ++k) {
+            const ChangeOut& change = change_outs[k];
+            if (!change.zone_line.empty() && !change.members.empty())
+                c << "zone\t" << outs[change.members.front()].r->room << "\t" << change.zone_line << "\n";
+        }
+        for (const MemberOut& m : outs) {
+            if (m.from.empty())
+                continue;
+            c << "member\t" << m.member << "\t" << m.from << "\n";
+            for (const auto& line : m.lines)
+                c << "mline\t" << m.member << "\t" << line << "\n";
+            for (const auto& file : m.written)
+                c << "mfile\t" << m.member << "\t" << file_mark(mod_dir / path_u8(file)) << "\t" << file << "\n";
+        }
+        const std::string text = c.str();
+        // not kept is no failure: the next save makes everything again
+        (void)write_into_mod(
+            mod_dir, cache_file(mod_dir, code),
+            [&](const std::filesystem::path& temporary) -> std::string {
+                std::ofstream f(temporary, std::ios::binary | std::ios::trunc);
+                f << text;
+                return f ? std::string() : std::string("could not be written");
+            },
+            [](const std::filesystem::path&) { return std::string(); });
+    }
     if (out != nullptr)
         *out = std::move(o);
     return true;
@@ -1489,9 +1809,12 @@ bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesy
 
 bool save_change(const std::filesystem::path& nitrofs, const std::filesystem::path& graphics_dump,
                  const std::filesystem::path& mod_dir, RoomReplacement r, const std::filesystem::path& model_source,
-                 const std::filesystem::path& collision_source_file, WorldOutcome* out, std::string* why) {
+                 const std::filesystem::path& collision_source_file, WorldOutcome* out, std::string* why,
+                 const SaveProgressFn& progress) {
     std::error_code ec;
     const auto folder = change_models(mod_dir, r.world, r.room);
+    if (progress)
+        progress(SaveProgress{});  // the model files copied first
     // the model files and what they need, beside the change
     auto bring = [&](const std::filesystem::path& source, std::string* name) {
         if (source.empty())
@@ -1536,19 +1859,19 @@ bool save_change(const std::filesystem::path& nitrofs, const std::filesystem::pa
         });
     if (!result.ok)
         return fail_with(why, result.why);
-    return write_world_outputs(nitrofs, graphics_dump, mod_dir, r.world, out, why);
+    return write_world_outputs(nitrofs, graphics_dump, mod_dir, r.world, out, why, progress);
 }
 
 bool revert_change(const std::filesystem::path& nitrofs, const std::filesystem::path& graphics_dump,
                    const std::filesystem::path& mod_dir, const std::string& code, int room, WorldOutcome* out,
-                   std::string* why) {
+                   std::string* why, const SaveProgressFn& progress) {
     std::error_code ec;
     const auto file = change_file(mod_dir, code, room);
     if (!std::filesystem::exists(file, ec))
         return fail_with(why, "room " + std::to_string(room) + " of " + code + " is not replaced in this mod");
     std::filesystem::remove(file, ec);
     std::filesystem::remove_all(change_models(mod_dir, code, room), ec);
-    return write_world_outputs(nitrofs, graphics_dump, mod_dir, code, out, why);
+    return write_world_outputs(nitrofs, graphics_dump, mod_dir, code, out, why, progress);
 }
 
 }  // namespace studio

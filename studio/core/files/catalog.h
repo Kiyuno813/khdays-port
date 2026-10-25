@@ -60,6 +60,9 @@ std::string text_language(std::string_view game_path);
 // (port/runtime/mods/textures.c lines 216-226). Empty when the key has none.
 std::string any_palette_key(const Item& item);
 
+// Names in a person's order: runs of digits by their value ("room/2" before "room/10"), the rest as bytes.
+bool natural_less(std::string_view a, std::string_view b);
+
 // The name an export of `item` is offered under: `main.p2#0_es.png`,
 // `ro_b.gltf`, `wd_tw_room0.gltf`.
 std::string export_name(const Item& item);

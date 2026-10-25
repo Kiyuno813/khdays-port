@@ -2,6 +2,7 @@
 // exits, any face or marker picked to read what it is -- and replaced by the modder's model, its
 // collision made and shown as the game will read it (docs/STUDIO.md, "Rooms").
 #include "../app.h"
+#include "../theme.h"
 #include "../save_dialog.h"
 
 #include "core/models/bones.h"
@@ -69,6 +70,9 @@ struct Replacing {
     fs::path model_source, collision_source;   // the files as given (or the mod's copies)
     assets::ImportedModel raw, raw_collision;  // as read
     assets::ImportedModel placed;              // placed: what is drawn
+    // placed's textures as the port draws them for a material (port/runtime/mods/models.cpp): opaque all opaque,
+    // a mask's texels whole or gone by its cutoff; by texture name and that alpha mode
+    std::map<std::string, std::vector<std::uint8_t>> shaped;
     RoomPlacement placed_with;                 // where `placed` was put (drawn moved to the place now while dragged)
     SurfaceMap surfaces;                       // its floors and roofs from above, as placed_with puts them
     bool dirty = false, built_ok = false;
@@ -202,6 +206,30 @@ struct Kh2Picker {
     }
 };
 Kh2Picker kh2;
+
+// A room's change being saved into the mod (or given back to the game) on a thread of its own: the world's
+// archive and every changed room's collision and models are made again, seconds of work the window keeps
+// drawing through, a bar showing how far it is.
+struct SaveJob {
+    std::thread worker;
+    std::atomic<bool> running{false};
+    // what was saved, kept to find the room it was of when it is done
+    bool revert = false;
+    int mod = -1;
+    std::string mod_name, world;
+    int room = -1;
+    fs::path mod_dir, model_source, collision_source;
+    // left by the worker
+    std::mutex mutex;
+    SaveProgress progress;
+    bool finished = false, ok = false;
+    std::string why;
+    ~SaveJob() {
+        if (worker.joinable())
+            worker.join();  // a save is never cut off half way
+    }
+};
+SaveJob saving;
 
 // The collision drawn and picked: the one made when the modder's is shown
 // (the game's when it is kept).
@@ -499,6 +527,7 @@ void rebuild() {
     if (p.active && p.model_source.empty()) {
         // the game's room kept as it looks and plays: only its markers (and exits' models) moved
         p.placed = {};
+        p.shaped.clear();
         p.surfaces = {};
         if (!m.has_collision) {
             p.error = "this room has no collision in the game's data, so no markers to move";
@@ -510,6 +539,7 @@ void rebuild() {
     if (p.model_source.empty())
         return;
     p.placed = p.raw;
+    p.shaped.clear();
     place_model(&p.placed, p.r.place);
     p.placed_with = p.r.place;
     if (!m.has_collision) {
@@ -747,9 +777,26 @@ void draw_room(App& app, ImVec2 size) {
                     if (name == shown && !decoded.rgba.empty())
                         t = &decoded;
                 }
+                using AlphaMode = assets::NeutralMesh::AlphaMode;
+                const bool opaque = mesh.alpha_mode == AlphaMode::opaque;
+                const bool mask = mesh.alpha_mode == AlphaMode::mask;
+                const std::uint8_t* rgba = t != nullptr ? t->rgba.data() : nullptr;
+                if (t != nullptr && (opaque || mask)) {
+                    const std::string key = shown + (opaque ? "@opaque" : "@mask" + std::to_string(mesh.alpha_cutoff));
+                    auto found = m.rep.shaped.find(key);
+                    if (found == m.rep.shaped.end()) {
+                        std::vector<std::uint8_t> px = t->rgba;
+                        const auto least = static_cast<std::uint8_t>(
+                            std::fmin(255.0f, std::fmax(0.0f, std::ceil(mesh.alpha_cutoff * 255.0f))));
+                        for (std::size_t i = 3; i < px.size(); i += 4)
+                            px[i] = opaque || px[i] >= least ? 255 : 0;
+                        found = m.rep.shaped.emplace(key, std::move(px)).first;
+                    }
+                    rgba = found->second.data();
+                }
                 PreviewImage image;
                 if (t != nullptr)
-                    image = {t->rgba.data(), t->width, t->height};
+                    image = {rgba, t->width, t->height};
                 const float tw = t != nullptr ? static_cast<float>(t->width) : 1.0f;
                 const float th = t != nullptr ? static_cast<float>(t->height) : 1.0f;
                 const auto offset = khdays::room::scroll_offset(mesh.scroll, frames, tw, th);
@@ -760,7 +807,9 @@ void draw_room(App& app, ImVec2 size) {
                     if (moving)
                         o.position = placed_point(m.rep.r.place, unplaced_point(m.rep.placed_with, o.position));
                     o.uv = {(v.texcoord[0] + offset[0]) / tw, (v.texcoord[1] + offset[1]) / th};
-                    o.colour = {v.color[0] / 255.0f, v.color[1] / 255.0f, v.color[2] / 255.0f, v.color[3] / 255.0f};
+                    // an opaque material's vertex alpha is not drawn (the port ignores it)
+                    o.colour = {v.color[0] / 255.0f, v.color[1] / 255.0f, v.color[2] / 255.0f,
+                                opaque ? 1.0f : v.color[3] / 255.0f};
                     return o;
                 };
                 for (std::size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
@@ -2668,6 +2717,8 @@ void choose_room_export(App& app, const Item& item) {
     choose_save_file(app, export_name(item), "glTF", "gltf", app.dialog_room_exports);
 }
 
+bool toggle_button(const char* label, bool on);
+
 // Above the picture while the room is being replaced: which room it shows,
 // and why it is not yours when yours could not be built.
 void draw_shown_room(App& app) {
@@ -2675,9 +2726,15 @@ void draw_shown_room(App& app) {
     const Replacing& p = m.rep;
     if (!p.active)
         return;
-    const char* views[3] = {tr(lang, S::map_show_new), tr(lang, S::map_show_game), tr(lang, S::map_show_both)};
-    ImGui::SetNextItemWidth(12 * ImGui::GetFontSize());
-    ImGui::Combo(tr(lang, S::map_show), &m.rep.view, views, 3);
+    // three buttons, the one shown pressed: a click switches at once
+    const S views[3] = {S::map_show_new, S::map_show_game, S::map_show_both};
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(tr(lang, S::map_show));
+    for (int i = 0; i < 3; ++i) {
+        ImGui::SameLine();
+        if (toggle_button(tr(lang, views[i]), m.rep.view == i))
+            m.rep.view = i;
+    }
     if (!p.built_ok && !p.dirty) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.4f, 0.4f, 1));
         ImGui::TextWrapped("%s",
@@ -3372,33 +3429,76 @@ void draw_collision_editor(App& app) {
     draw_shape_fields(app);
 }
 
-// The room's change saved into the mod: "Save into the mod" in the panel, "Save room" over the picture.
-void save_room(App& app) {
-    const auto lang = app.language;
+// The room's change saved into the mod ("Save into the mod"), or with `revert` given back to the game
+// ("Revert"): started on its own thread; map_save_poll() takes what it left.
+void start_save(App& app, bool revert) {
     Replacing& p = m.rep;
     const Mod* mod = app.current_mod();
-    if (mod == nullptr || !p.built_ok || !p.edit_error.empty())
+    if (saving.running || mod == nullptr || m.room == nullptr || (!revert && (!p.built_ok || !p.edit_error.empty())))
         return;
+    if (saving.worker.joinable())
+        saving.worker.join();
+    p.r.world = m.world.code;
+    p.r.room = m.room->index;
+    saving.revert = revert;
+    saving.mod = app.mod;
+    saving.mod_name = mod->name;
+    saving.world = m.world.code;
+    saving.room = m.room->index;
+    saving.mod_dir = mod->dir;
+    saving.model_source = p.model_source;
+    saving.collision_source = p.collision_source;
+    saving.progress = SaveProgress{};
+    saving.finished = false;
+    saving.ok = false;
+    saving.why.clear();
+    saving.running = true;
     const fs::path dump = resolve(app.settings, app.settings.graphics_dump);
-
+    saving.worker = std::thread([files = nitrofs(), dump, change = p.r] {
+        const auto progress = [](const SaveProgress& now) {
+            std::lock_guard lock(saving.mutex);
+            saving.progress = now;
+        };
         WorldOutcome o;
         std::string why;
-        p.r.world = m.world.code;
-        p.r.room = m.room->index;
-        if (save_change(nitrofs(), dump, mod->dir, p.r, p.model_source, p.collision_source, &o, &why)) {
-            // from now on, the mod's copies
-            const fs::path folder = change_models(mod->dir, m.world.code, m.room->index);
-            if (!p.model_source.empty())
-                p.model_source = folder / p.model_source.filename();
-            if (!p.collision_source.empty())
-                p.collision_source = folder / p.collision_source.filename();
-            p.from_mod = true;
-            p.message = fmt(lang, S::map_saved, {mod->name});
-            app.tell(p.message + "  " + tr(lang, S::restart_note), true);
-        } else {
-            p.error = why;
-            app.tell(fmt(lang, S::save_failed, {why}), false);
-        }
+        const bool ok = saving.revert ? revert_change(files, dump, saving.mod_dir, saving.world, saving.room, &o,
+                                                      &why, progress)
+                                      : save_change(files, dump, saving.mod_dir, change, saving.model_source,
+                                                    saving.collision_source, &o, &why, progress);
+        std::lock_guard lock(saving.mutex);
+        saving.ok = ok;
+        saving.why = why;
+        saving.finished = true;
+        saving.running = false;
+    });
+}
+
+// Whether the room shown is the one the save was of.
+bool shown_saved_room(const App& app) {
+    return m.room != nullptr && m.mod == saving.mod && app.mod == saving.mod && m.world.code == saving.world &&
+           m.room->index == saving.room;
+}
+
+// How far the save is, as a bar ("Saving into Twilight Town: room 4's floor and walls, 3 of 14").
+void draw_save_progress(App& app) {
+    const auto lang = app.language;
+    SaveProgress now;
+    {
+        std::lock_guard lock(saving.mutex);
+        now = saving.progress;
+    }
+    const std::string room = std::to_string(now.room);
+    const std::string step = now.stage == SaveProgress::copying   ? tr(lang, S::map_save_step_copy)
+                             : now.stage == SaveProgress::building    ? fmt(lang, S::map_save_step_room, {room})
+                             : now.stage == SaveProgress::archive ? tr(lang, S::map_save_step_archive)
+                             : now.stage == SaveProgress::models  ? fmt(lang, S::map_save_step_models, {room})
+                                                                  : tr(lang, S::map_save_step_finish);
+    ImGui::TextUnformatted(
+        fmt(lang, saving.revert ? S::map_reverting : S::map_saving, {saving.mod_name}).c_str());
+    const float total = static_cast<float>(std::max(1, now.total));
+    const std::string over = step + "  (" + std::to_string(std::min(now.done + 1, now.total)) + " / " +
+                             std::to_string(now.total) + ")";
+    ImGui::ProgressBar(static_cast<float>(now.done) / total, ImVec2(-1, 0), over.c_str());
 }
 
 // --- The bars over and under the picture: the collision editor's tools laid out across ---------------------
@@ -3723,25 +3823,20 @@ void draw_replace(App& app, const Item& item) {
 
     // 4. saved into the mod (or the room given back to the game)
     ImGui::SeparatorText(tr(lang, S::map_step_save));
-    const fs::path dump = resolve(app.settings, app.settings.graphics_dump);
-    ImGui::BeginDisabled(!p.built_ok || !p.edit_error.empty());
-    if (ImGui::Button(tr(lang, S::map_save)))
-        save_room(app);
-    ImGui::EndDisabled();
-    if (p.from_mod) {
-        same_line_if_room(button_width(tr(lang, S::map_revert)));
-        if (ImGui::Button(tr(lang, S::map_revert))) {
-            WorldOutcome o;
-            std::string why;
-            if (revert_change(nitrofs(), dump, mod->dir, m.world.code, m.room->index, &o, &why)) {
-                m.rep = Replacing{};
-                history_clear(EditOwner::room);
-                m.rep.message = fmt(lang, S::map_reverted, {mod->name});
-                app.tell(m.rep.message, true);
-            } else {
-                p.error = why;
-                app.tell(fmt(lang, S::save_failed, {why}), false);
-            }
+    if (saving.running) {
+        draw_save_progress(app);
+    } else {
+        ImGui::BeginDisabled(!p.built_ok || !p.edit_error.empty());
+        push_save_colours();
+        const bool save = ImGui::Button(tr(lang, S::map_save));
+        pop_save_colours();
+        if (save)
+            start_save(app, false);
+        ImGui::EndDisabled();
+        if (p.from_mod) {
+            same_line_if_room(button_width(tr(lang, S::map_revert)));
+            if (ImGui::Button(tr(lang, S::map_revert)))
+                start_save(app, true);
         }
     }
     if (!m.rep.message.empty())
@@ -3820,6 +3915,8 @@ void draw_map_view(App& app, const Item& item) {
         fmt(lang, S::map_room, {std::to_string(m.room->index), std::to_string(m.room->id), world_path(m.world.code)})
             .c_str());
     draw_shown_room(app);
+    if (saving.running)
+        draw_save_progress(app);
     if (m.has_collision) {
         ImGui::TextDisabled(
             "%s", fmt(lang, S::map_counts,
@@ -3856,6 +3953,55 @@ void draw_map_view(App& app, const Item& item) {
     ImGui::BeginChild("##map_bottom_bar", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
     draw_map_bottom_bar(app);
     ImGui::EndChild();
+}
+
+bool map_saving() {
+    return saving.running;
+}
+
+void map_save_poll(App& app) {
+    if (saving.running || !saving.worker.joinable())
+        return;
+    saving.worker.join();
+    bool ok = false;
+    std::string why;
+    {
+        std::lock_guard lock(saving.mutex);
+        if (!saving.finished)
+            return;
+        saving.finished = false;
+        ok = saving.ok;
+        why = saving.why;
+    }
+    const auto lang = app.language;
+    const bool here = shown_saved_room(app);
+    if (!ok) {
+        if (here)
+            m.rep.error = why;
+        app.tell(fmt(lang, S::save_failed, {why}), false);
+        return;
+    }
+    if (saving.revert) {
+        if (here) {
+            m.rep = Replacing{};
+            history_clear(EditOwner::room);
+            m.rep.message = fmt(lang, S::map_reverted, {saving.mod_name});
+        }
+        app.tell(fmt(lang, S::map_reverted, {saving.mod_name}), true);
+        return;
+    }
+    if (here) {
+        // from now on, the mod's copies (of the files saved: another chosen meanwhile stays as chosen)
+        Replacing& p = m.rep;
+        const fs::path folder = change_models(saving.mod_dir, saving.world, saving.room);
+        if (!p.model_source.empty() && p.model_source == saving.model_source)
+            p.model_source = folder / p.model_source.filename();
+        if (!p.collision_source.empty() && p.collision_source == saving.collision_source)
+            p.collision_source = folder / p.collision_source.filename();
+        p.from_mod = true;
+        p.message = fmt(lang, S::map_saved, {saving.mod_name});
+    }
+    app.tell(fmt(lang, S::map_saved, {saving.mod_name}) + "  " + tr(lang, S::restart_note), true);
 }
 
 void draw_map_controls(App& app, const Item& item, bool panels) {
