@@ -467,6 +467,7 @@ enum class S {
     map_save_step_room,
     map_save_step_archive,
     map_save_step_models,
+    map_save_closing,
     map_save_step_finish,
     mission_see_point_hint,
     mission_tree_worlds,

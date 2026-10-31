@@ -1,5 +1,5 @@
-// The interface's words: every one in English and Spanish (French, German and Italian may fall back to
-// English), placeholders filled.
+// The interface's words: every one in the five
+// languages, placeholders filled.
 #include "test.h"
 
 #include "strings.h"
@@ -9,12 +9,12 @@
 
 using namespace studio;
 
-TEST(every_word_in_english_and_spanish) {
+TEST(every_word_in_every_language) {
     int missing = 0;
-    for (const Language l : {Language::en, Language::es}) {
+    for (int l = 0; l < static_cast<int>(Language::count); ++l) {
         for (int s = 0; s < static_cast<int>(S::count); ++s) {
-            if (!translated(l, static_cast<S>(s))) {
-                std::fprintf(stderr, "  no %s word for string %d\n", language_code(l), s);
+            if (!translated(static_cast<Language>(l), static_cast<S>(s))) {
+                std::fprintf(stderr, "  no %s word for string %d\n", language_code(static_cast<Language>(l)), s);
                 ++missing;
             }
         }

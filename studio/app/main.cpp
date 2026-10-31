@@ -351,14 +351,15 @@ int run_window(App& app) {
     bool themes_open = false;
     bool console_open = false;
     bool done = false;
+    bool closing = false;  // asked to close while a room is saved: closed when the save is done
     while (!done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL3_ProcessEvent(&event);
             if (event.type == SDL_EVENT_QUIT)
-                done = true;
+                closing = true;
             if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(app.window))
-                done = true;
+                closing = true;
             if (event.type == SDL_EVENT_DROP_FILE && event.drop.data != nullptr)
                 app.offer(path_u8(event.drop.data));
         }
@@ -374,6 +375,18 @@ int run_window(App& app) {
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
         draw_frame(app, &settings_open, &themes_open, &console_open);
+        if (closing && map_saving()) {
+            // never cut a save off half way: the window stays, saying why, until it is done
+            const ImGuiViewport* view = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(view->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            ImGui::Begin("##closing", nullptr,
+                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove);
+            ImGui::TextUnformatted(fmt(app.language, S::map_save_closing, {map_saving_into()}).c_str());
+            ImGui::End();
+        } else if (closing) {
+            done = true;  // the save's outcome already taken (map_save_poll, in draw_frame)
+        }
         ImGui::Render();
 
         ImDrawData* draw = ImGui::GetDrawData();

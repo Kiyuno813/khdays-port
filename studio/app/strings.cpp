@@ -1288,198 +1288,361 @@ constexpr Row rows[] =
          {"Exit {0}, model {1} (entry {2})", "Sortie {0}, modèle {1} (entrée {2})",
           "Ausgang {0}, Modell {1} (Eintrag {2})", "Uscita {0}, modello {1} (voce {2})",
           "Salida {0}, modelo {1} (entrada {2})"}},
-        {S::map_gate_at, {"At {0}, {1}, {2}", nullptr, nullptr, nullptr, "En {0}, {1}, {2}"}},
+        {S::map_gate_at,
+         {"At {0}, {1}, {2}", "À {0}, {1}, {2}", "Bei {0}, {1}, {2}", "In {0}, {1}, {2}", "En {0}, {1}, {2}"}},
         {S::map_gate_move_hint,
-         {"To move it, choose \"Markers and exits only\" (or a model) under \"Replace this room\".", nullptr, nullptr,
-          nullptr, "Para moverlo, elige \"Solo marcadores y salidas\" (o un modelo) en \"Sustituir esta sala\"."}},
-        {S::map_gate_reset, {"Back to the game's place", nullptr, nullptr, nullptr, "Volver al lugar del juego"}},
+         {"To move it, choose \"Markers and exits only\" (or a model) under \"Replace this room\".",
+          "Pour le déplacer, choisissez « Repères et sorties seulement » (ou un modèle) sous « Remplacer cette "
+          "salle ».",
+          "Um ihn zu verschieben, wähle „Nur Marker und Ausgänge“ (oder ein Modell) unter „Diesen Raum ersetzen“.",
+          "Per spostarlo, scegli «Solo segnaposti e uscite» (o un modello) in «Sostituisci questa stanza».",
+          "Para moverlo, elige \"Solo marcadores y salidas\" (o un modelo) en \"Sustituir esta sala\"."}},
+        {S::map_gate_reset,
+         {"Back to the game's place", "Retour à la place du jeu", "Zurück an die Stelle des Spiels",
+          "Torna al posto del gioco", "Volver al lugar del juego"}},
         {S::map_edit_help,
          {"Click a face to select it; Ctrl+click adds it or takes it away; Shift+drag selects the faces facing you "
           "inside a box; click a shape's face to pick the shape. Delete removes the selected faces; Ctrl+Z undoes, "
           "Ctrl+Y redoes.",
-          nullptr, nullptr, nullptr,
-          "Haz clic en una cara para elegirla; Ctrl+clic la añade o la quita; Mayús+arrastrar elige las caras que te "
-          "miran dentro de un recuadro; clic en una cara de una forma elige la forma. Supr quita las caras elegidas; "
-          "Ctrl+Z deshace, Ctrl+Y rehace."}},
-        {S::map_edit_undo, {"Undo", nullptr, nullptr, nullptr, "Deshacer"}},
-        {S::map_edit_redo, {"Redo", nullptr, nullptr, nullptr, "Rehacer"}},
+          "Cliquez sur une face pour la choisir ; Ctrl+clic l'ajoute ou la retire ; Maj+glisser choisit les faces "
+          "tournées vers vous dans un cadre ; cliquez sur une face d'une forme pour choisir la forme. Suppr retire "
+          "les faces choisies ; Ctrl+Z annule, Ctrl+Y rétablit.",
+          "Klicke eine Fläche an, um sie zu wählen; Strg+Klick fügt sie hinzu oder nimmt sie weg; Umschalt+Ziehen "
+          "wählt die dir zugewandten Flächen in einem Rahmen; ein Klick auf eine Fläche einer Form wählt die Form. "
+          "Entf entfernt die gewählten Flächen; Strg+Z macht rückgängig, Strg+Y stellt wieder her.",
+          "Clicca una faccia per sceglierla; Ctrl+clic la aggiunge o la toglie; Maiusc+trascina sceglie le facce "
+          "rivolte verso di te in un riquadro; clicca una faccia di una forma per scegliere la forma. Canc toglie "
+          "le facce scelte; Ctrl+Z annulla, Ctrl+Y ripete.",
+          "Haz clic en una cara para elegirla; Ctrl+clic la añade o la quita; Mayús+arrastrar elige las caras que "
+          "te miran dentro de un recuadro; clic en una cara de una forma elige la forma. Supr quita las caras "
+          "elegidas; Ctrl+Z deshace, Ctrl+Y rehace."}},
+        {S::map_edit_undo, {"Undo", "Annuler", "Rückgängig", "Annulla", "Deshacer"}},
+        {S::map_edit_redo, {"Redo", "Rétablir", "Wiederholen", "Ripeti", "Rehacer"}},
         {S::map_edit_error,
-         {"The hand edits cannot be saved: {0}", nullptr, nullptr, nullptr,
+         {"The hand edits cannot be saved: {0}", "Les retouches à la main ne peuvent pas être enregistrées : {0}",
+          "Die Handänderungen lassen sich nicht speichern: {0}", "Le modifiche a mano non si possono salvare: {0}",
           "Las ediciones a mano no se pueden guardar: {0}"}},
-        {S::map_edit_selected, {"{0} faces selected", nullptr, nullptr, nullptr, "{0} caras elegidas"}},
-        {S::map_edit_delete, {"Remove", nullptr, nullptr, nullptr, "Quitar"}},
-        {S::map_edit_make_ground, {"Make grounds", nullptr, nullptr, nullptr, "Hacer suelos"}},
-        {S::map_edit_make_wall, {"Make walls", nullptr, nullptr, nullptr, "Hacer paredes"}},
-        {S::map_edit_make_ceiling, {"Make ceilings", nullptr, nullptr, nullptr, "Hacer techos"}},
-        {S::map_edit_select_none, {"Select none", nullptr, nullptr, nullptr, "No elegir ninguna"}},
-        {S::map_edit_names, {"Names", nullptr, nullptr, nullptr, "Nombres"}},
-        {S::map_edit_apply_names, {"Give these names", nullptr, nullptr, nullptr, "Dar estos nombres"}},
+        {S::map_edit_selected,
+         {"{0} faces selected", "{0} faces choisies", "{0} Flächen gewählt", "{0} facce scelte", "{0} caras elegidas"}},
+        {S::map_edit_delete, {"Remove", "Retirer", "Entfernen", "Togli", "Quitar"}},
+        {S::map_edit_make_ground,
+         {"Make grounds", "Faire des sols", "Zu Böden machen", "Rendi pavimenti", "Hacer suelos"}},
+        {S::map_edit_make_wall, {"Make walls", "Faire des murs", "Zu Wänden machen", "Rendi muri", "Hacer paredes"}},
+        {S::map_edit_make_ceiling,
+         {"Make ceilings", "Faire des plafonds", "Zu Decken machen", "Rendi soffitti", "Hacer techos"}},
+        {S::map_edit_select_none,
+         {"Select none", "Ne rien choisir", "Nichts wählen", "Non sceglierne nessuna", "No elegir ninguna"}},
+        {S::map_edit_names, {"Names", "Noms", "Namen", "Nomi", "Nombres"}},
+        {S::map_edit_apply_names,
+         {"Give these names", "Donner ces noms", "Diese Namen geben", "Dai questi nomi", "Dar estos nombres"}},
         {S::map_edit_counts,
-         {"Hand edits: {0} faces removed, {1} of another kind, {2} renamed", nullptr, nullptr, nullptr,
+         {"Hand edits: {0} faces removed, {1} of another kind, {2} renamed",
+          "Retouches à la main : {0} faces retirées, {1} d'un autre type, {2} renommées",
+          "Handänderungen: {0} Flächen entfernt, {1} von anderer Art, {2} umbenannt",
+          "Modifiche a mano: {0} facce tolte, {1} di un altro tipo, {2} rinominate",
           "Ediciones a mano: {0} caras quitadas, {1} de otro tipo, {2} renombradas"}},
-        {S::map_edit_bring_back, {"Bring every face back", nullptr, nullptr, nullptr, "Devolver todas las caras"}},
+        {S::map_edit_bring_back,
+         {"Bring every face back", "Rendre toutes les faces", "Alle Flächen zurückholen", "Riporta tutte le facce",
+          "Devolver todas las caras"}},
         {S::map_edit_unmatched,
          {"{0} hand edits name faces this room no longer has (its model or settings changed): they do nothing.",
-          nullptr, nullptr, nullptr,
+          "{0} retouches à la main nomment des faces que cette salle n'a plus (son modèle ou ses réglages ont "
+          "changé) : elles ne font rien.",
+          "{0} Handänderungen nennen Flächen, die dieser Raum nicht mehr hat (sein Modell oder seine Einstellungen "
+          "haben sich geändert): Sie bewirken nichts.",
+          "{0} modifiche a mano nominano facce che questa stanza non ha più (il suo modello o le sue impostazioni "
+          "sono cambiati): non fanno nulla.",
           "{0} ediciones a mano nombran caras que esta sala ya no tiene (cambió su modelo o sus ajustes): no hacen "
           "nada."}},
-        {S::map_edit_shapes, {"Shapes ({0})", nullptr, nullptr, nullptr, "Formas ({0})"}},
-        {S::map_edit_add, {"Add:", nullptr, nullptr, nullptr, "Añadir:"}},
+        {S::map_edit_shapes, {"Shapes ({0})", "Formes ({0})", "Formen ({0})", "Forme ({0})", "Formas ({0})"}},
+        {S::map_edit_add, {"Add:", "Ajouter :", "Hinzufügen:", "Aggiungi:", "Añadir:"}},
         {S::map_edit_add_hint,
          {"Added over the selected faces, fitted to them (a ramp or wedge rising the way they rise), or at the "
           "middle of the view. Its faces become grounds, walls and ceilings by their slope, as a model's do.",
-          nullptr, nullptr, nullptr,
+          "Ajoutée sur les faces choisies, ajustée à elles (une rampe ou un coin monte du côté où elles montent), "
+          "ou au milieu de la vue. Ses faces deviennent sols, murs et plafonds selon leur pente, comme celles d'un "
+          "modèle.",
+          "Wird über den gewählten Flächen hinzugefügt und an sie angepasst (eine Rampe oder ein Keil steigt "
+          "dorthin, wohin sie steigen), oder in der Mitte der Ansicht. Ihre Flächen werden nach ihrer Neigung zu "
+          "Böden, Wänden und Decken, wie die eines Modells.",
+          "Si aggiunge sopra le facce scelte, adattata a esse (una rampa o un cuneo sale dove salgono loro), o al "
+          "centro della vista. Le sue facce diventano pavimenti, muri e soffitti secondo la pendenza, come quelle "
+          "di un modello.",
           "Se añade sobre las caras elegidas, ajustada a ellas (una rampa o cuña sube hacia donde suben), o en el "
           "centro de la vista. Sus caras pasan a ser suelos, paredes y techos según su pendiente, como las de un "
           "modelo."}},
-        {S::map_shape_plane, {"Plane", nullptr, nullptr, nullptr, "Plano"}},
-        {S::map_shape_ramp, {"Ramp", nullptr, nullptr, nullptr, "Rampa"}},
-        {S::map_shape_box, {"Box", nullptr, nullptr, nullptr, "Caja"}},
-        {S::map_shape_wedge, {"Wedge", nullptr, nullptr, nullptr, "Cuña"}},
-        {S::map_shape_kind, {"Shape", nullptr, nullptr, nullptr, "Forma"}},
-        {S::map_shape_at, {"Place (bottom middle)", nullptr, nullptr, nullptr, "Lugar (centro de la base)"}},
-        {S::map_shape_turn, {"Turn (degrees x, y, z)", nullptr, nullptr, nullptr, "Giro (grados x, y, z)"}},
-        {S::map_shape_size, {"Size (x, y, z)", nullptr, nullptr, nullptr, "Tamaño (x, y, z)"}},
-        {S::map_shape_both, {"Both sides", nullptr, nullptr, nullptr, "Ambos lados"}},
-        {S::map_shape_turn90, {"Turn 90°", nullptr, nullptr, nullptr, "Girar 90°"}},
-        {S::map_shape_copy, {"Duplicate", nullptr, nullptr, nullptr, "Duplicar"}},
-        {S::map_shape_delete, {"Delete the shape", nullptr, nullptr, nullptr, "Borrar la forma"}},
-        {S::map_shape_row, {"{0}. {1} at {2}, {3}, {4}", nullptr, nullptr, nullptr, "{0}. {1} en {2}, {3}, {4}"}},
-        {S::map_shape_by_slope, {"By its slope", nullptr, nullptr, nullptr, "Según su pendiente"}},
-        {S::map_shape_list, {"Collision kind", nullptr, nullptr, nullptr, "Tipo de colisión"}},
-        {S::map_gizmo_move, {"Move (1)", nullptr, nullptr, nullptr, "Mover (1)"}},
-        {S::map_gizmo_size, {"Resize (2)", nullptr, nullptr, nullptr, "Tamaño (2)"}},
-        {S::map_gizmo_turn, {"Turn (3)", nullptr, nullptr, nullptr, "Girar (3)"}},
+        {S::map_shape_plane, {"Plane", "Plan", "Ebene", "Piano", "Plano"}},
+        {S::map_shape_ramp, {"Ramp", "Rampe", "Rampe", "Rampa", "Rampa"}},
+        {S::map_shape_box, {"Box", "Boîte", "Kasten", "Scatola", "Caja"}},
+        {S::map_shape_wedge, {"Wedge", "Coin", "Keil", "Cuneo", "Cuña"}},
+        {S::map_shape_kind, {"Shape", "Forme", "Form", "Forma", "Forma"}},
+        {S::map_shape_at,
+         {"Place (bottom middle)", "Place (milieu du bas)", "Ort (Mitte unten)", "Posto (centro della base)",
+          "Lugar (centro de la base)"}},
+        {S::map_shape_turn,
+         {"Turn (degrees x, y, z)", "Rotation (degrés x, y, z)", "Drehung (Grad x, y, z)", "Rotazione (gradi x, y, z)",
+          "Giro (grados x, y, z)"}},
+        {S::map_shape_size,
+         {"Size (x, y, z)", "Taille (x, y, z)", "Größe (x, y, z)", "Dimensione (x, y, z)", "Tamaño (x, y, z)"}},
+        {S::map_shape_both, {"Both sides", "Les deux côtés", "Beide Seiten", "Entrambi i lati", "Ambos lados"}},
+        {S::map_shape_turn90, {"Turn 90°", "Tourner de 90°", "Um 90° drehen", "Ruota di 90°", "Girar 90°"}},
+        {S::map_shape_copy, {"Duplicate", "Dupliquer", "Duplizieren", "Duplica", "Duplicar"}},
+        {S::map_shape_delete,
+         {"Delete the shape", "Supprimer la forme", "Form löschen", "Elimina la forma", "Borrar la forma"}},
+        {S::map_shape_row,
+         {"{0}. {1} at {2}, {3}, {4}", "{0}. {1} à {2}, {3}, {4}", "{0}. {1} bei {2}, {3}, {4}",
+          "{0}. {1} in {2}, {3}, {4}", "{0}. {1} en {2}, {3}, {4}"}},
+        {S::map_shape_by_slope,
+         {"By its slope", "Selon sa pente", "Nach ihrer Neigung", "Secondo la pendenza", "Según su pendiente"}},
+        {S::map_shape_list,
+         {"Collision kind", "Type de collision", "Kollisionsart", "Tipo di collisione", "Tipo de colisión"}},
+        {S::map_gizmo_move, {"Move (1)", "Déplacer (1)", "Verschieben (1)", "Sposta (1)", "Mover (1)"}},
+        {S::map_gizmo_size, {"Resize (2)", "Taille (2)", "Größe (2)", "Dimensione (2)", "Tamaño (2)"}},
+        {S::map_gizmo_turn, {"Turn (3)", "Tourner (3)", "Drehen (3)", "Ruota (3)", "Girar (3)"}},
         {S::map_gizmo_keys,
-         {"1 move  2 resize  3 turn  Ctrl: snap  right click: cancel", nullptr, nullptr, nullptr,
+         {"1 move  2 resize  3 turn  Ctrl: snap  right click: cancel",
+          "1 déplacer  2 taille  3 tourner  Ctrl : aimanter  clic droit : annuler",
+          "1 verschieben  2 Größe  3 drehen  Strg: einrasten  Rechtsklick: abbrechen",
+          "1 sposta  2 dimensione  3 ruota  Ctrl: aggancia  clic destro: annulla",
           "1 mover  2 tamaño  3 girar  Ctrl: ajustar  clic derecho: cancelar"}},
         {S::map_gizmo_hint,
          {"The picked shape's handles in the picture. Move: drag an arrow to move along that axis (red x, green "
           "up, blue z), the white square to slide it over the ground. Resize: drag a side's box, the other side "
           "stays. Turn: drag the green ring. Hold Ctrl to snap (0.25 units, 15 degrees); a right click while "
           "dragging puts it back. Delete removes the shape when no face is selected.",
-          nullptr, nullptr, nullptr,
+          "Les poignées de la forme choisie dans l'image. Déplacer : glissez une flèche pour la déplacer sur cet "
+          "axe (rouge x, vert vers le haut, bleu z), le carré blanc pour la faire glisser sur le sol. Taille : "
+          "glissez la boîte d'un côté, l'autre côté reste en place. Tourner : glissez l'anneau vert. Maintenez "
+          "Ctrl pour aimanter (0,25 unité, 15 degrés) ; un clic droit pendant le glissement la remet en place. "
+          "Suppr supprime la forme quand aucune face n'est choisie.",
+          "Die Griffe der gewählten Form im Bild. Verschieben: Ziehe einen Pfeil, um sie entlang dieser Achse zu "
+          "bewegen (rot x, grün nach oben, blau z), das weiße Quadrat, um sie über den Boden zu schieben. Größe: "
+          "Ziehe den Kasten einer Seite, die andere Seite bleibt. Drehen: Ziehe den grünen Ring. Halte Strg zum "
+          "Einrasten (0,25 Einheiten, 15 Grad); ein Rechtsklick beim Ziehen setzt sie zurück. Entf löscht die "
+          "Form, wenn keine Fläche gewählt ist.",
+          "Le maniglie della forma scelta nell'immagine. Sposta: trascina una freccia per muoverla su quell'asse "
+          "(rosso x, verde in alto, blu z), il quadrato bianco per farla scorrere sul pavimento. Dimensione: "
+          "trascina la scatola di un lato, l'altro lato resta fermo. Ruota: trascina l'anello verde. Tieni premuto "
+          "Ctrl per agganciare (0,25 unità, 15 gradi); un clic destro mentre trascini la rimette a posto. Canc "
+          "elimina la forma quando non è scelta nessuna faccia.",
           "Los controles de la forma elegida en la imagen. Mover: arrastra una flecha para moverla en ese eje "
           "(rojo x, verde arriba, azul z), el cuadrado blanco para deslizarla sobre el suelo. Tamaño: arrastra la "
           "caja de un lado, el otro lado se queda. Girar: arrastra el anillo verde. Mantén Ctrl para ajustar (0,25 "
           "unidades, 15 grados); un clic derecho al arrastrar la devuelve. Supr borra la forma si no hay caras "
           "elegidas."}},
-        {S::map_tb_edit, {"Edit collision", nullptr, nullptr, nullptr, "Editar colisión"}},
-        {S::map_tb_mode, {"Handles:", nullptr, nullptr, nullptr, "Controles:"}},
-        {S::map_tb_place, {"Place", nullptr, nullptr, nullptr, "Lugar"}},
-        {S::map_tb_turn, {"Turn", nullptr, nullptr, nullptr, "Giro"}},
-        {S::map_tb_size, {"Size", nullptr, nullptr, nullptr, "Tamaño"}},
+        {S::map_tb_edit,
+         {"Edit collision", "Modifier la collision", "Kollision bearbeiten", "Modifica la collisione",
+          "Editar colisión"}},
+        {S::map_tb_mode, {"Handles:", "Poignées :", "Griffe:", "Maniglie:", "Controles:"}},
+        {S::map_tb_place, {"Place", "Place", "Ort", "Posto", "Lugar"}},
+        {S::map_tb_turn, {"Turn", "Rotation", "Drehung", "Rotazione", "Giro"}},
+        {S::map_tb_size, {"Size", "Taille", "Größe", "Dimensione", "Tamaño"}},
         {S::map_tb_nothing,
-         {"Click a face or a shape in the picture to work on it; Ctrl+click adds faces, Shift+drag selects them "
-          "in a box.",
-          nullptr, nullptr, nullptr,
+         {"Click a face or a shape in the picture to work on it; Ctrl+click adds faces, Shift+drag selects them in "
+          "a box.",
+          "Cliquez sur une face ou une forme de l'image pour la travailler ; Ctrl+clic ajoute des faces, "
+          "Maj+glisser les choisit dans un cadre.",
+          "Klicke eine Fläche oder eine Form im Bild an, um sie zu bearbeiten; Strg+Klick fügt Flächen hinzu, "
+          "Umschalt+Ziehen wählt sie in einem Rahmen.",
+          "Clicca una faccia o una forma nell'immagine per lavorarci; Ctrl+clic aggiunge facce, Maiusc+trascina le "
+          "sceglie in un riquadro.",
           "Haz clic en una cara o una forma de la imagen para trabajar con ella; Ctrl+clic añade caras, "
           "Mayús+arrastrar las elige en un recuadro."}},
-        {S::map_snap_surface, {"Snap to surfaces", nullptr, nullptr, nullptr, "Ajustar a superficies"}},
+        {S::map_snap_surface,
+         {"Snap to surfaces", "Aimanter aux surfaces", "An Oberflächen einrasten", "Aggancia alle superfici",
+          "Ajustar a superficies"}},
         {S::map_snap_surface_hint,
-         {"While the Move square is dragged, the shape's bottom middle goes where the pointer meets a surface "
-          "(a floor, a wall's top, another shape); Ctrl still snaps it to 0.25 units across.",
-          nullptr, nullptr, nullptr,
+         {"While the Move square is dragged, the shape's bottom middle goes where the pointer meets a surface (a "
+          "floor, a wall's top, another shape); Ctrl still snaps it to 0.25 units across.",
+          "Pendant que le carré de Déplacer est glissé, le milieu du bas de la forme va là où le pointeur touche "
+          "une surface (un sol, le haut d'un mur, une autre forme) ; Ctrl l'aimante toujours à 0,25 unité.",
+          "Während das Quadrat von Verschieben gezogen wird, kommt die Mitte unten der Form dorthin, wo der Zeiger "
+          "eine Oberfläche trifft (einen Boden, die Oberkante einer Wand, eine andere Form); Strg rastet sie "
+          "weiter auf 0,25 Einheiten ein.",
+          "Mentre il quadrato di Sposta viene trascinato, il centro della base della forma va dove il puntatore "
+          "tocca una superficie (un pavimento, la cima di un muro, un'altra forma); Ctrl la aggancia ancora a 0,25 "
+          "unità.",
           "Al arrastrar el cuadrado de Mover, el centro de la base de la forma va donde el puntero toca una "
           "superficie (un suelo, lo alto de una pared, otra forma); Ctrl la sigue ajustando a 0,25 unidades."}},
-        {S::map_drop, {"Drop to ground", nullptr, nullptr, nullptr, "Bajar al suelo"}},
+        {S::map_drop,
+         {"Drop to ground", "Poser au sol", "Auf den Boden setzen", "Appoggia al pavimento", "Bajar al suelo"}},
         {S::map_drop_hint,
-         {"Lowers (or raises) the picked shape until its bottom rests on the floor under it (End).", nullptr, nullptr,
-          nullptr, "Baja (o sube) la forma elegida hasta que su base se apoye en el suelo de debajo (Fin)."}},
+         {"Lowers (or raises) the picked shape until its bottom rests on the floor under it (End).",
+          "Descend (ou monte) la forme choisie jusqu'à ce que son bas repose sur le sol en dessous (Fin).",
+          "Senkt (oder hebt) die gewählte Form, bis ihre Unterseite auf dem Boden darunter liegt (Ende).",
+          "Abbassa (o alza) la forma scelta finché la sua base poggia sul pavimento sottostante (Fine).",
+          "Baja (o sube) la forma elegida hasta que su base se apoye en el suelo de debajo (Fin)."}},
         {S::map_drop_none,
-         {"No floor under the shape to drop it on.", nullptr, nullptr, nullptr,
-          "No hay suelo bajo la forma donde bajarla."}},
-        {S::map_convert, {"Convert to:", nullptr, nullptr, nullptr, "Convertir en:"}},
+         {"No floor under the shape to drop it on.", "Aucun sol sous la forme où la poser.",
+          "Kein Boden unter der Form, auf den sie gesetzt werden kann.",
+          "Nessun pavimento sotto la forma su cui appoggiarla.", "No hay suelo bajo la forma donde bajarla."}},
+        {S::map_convert, {"Convert to:", "Convertir en :", "Umwandeln in:", "Converti in:", "Convertir en:"}},
         {S::map_convert_hint,
          {"The selected faces become one shape you can move, resize and turn: fitted over them (a plane lies on "
           "them, facing their way; a ramp or wedge rises the way they rise), their kind and names kept when all "
           "share them, and the faces themselves removed. One Undo brings them back.",
-          nullptr, nullptr, nullptr,
+          "Les faces choisies deviennent une forme que vous pouvez déplacer, redimensionner et tourner : ajustée "
+          "sur elles (un plan repose sur elles, tourné du même côté ; une rampe ou un coin monte du côté où elles "
+          "montent), leur type et leurs noms gardés quand toutes les partagent, et les faces elles-mêmes retirées. "
+          "Un seul Annuler les ramène.",
+          "Die gewählten Flächen werden zu einer Form, die du verschieben, skalieren und drehen kannst: über sie "
+          "angepasst (eine Ebene liegt auf ihnen und zeigt in ihre Richtung; eine Rampe oder ein Keil steigt "
+          "dorthin, wohin sie steigen), ihre Art und Namen behalten, wenn alle sie teilen, und die Flächen selbst "
+          "entfernt. Ein Rückgängig holt sie zurück.",
+          "Le facce scelte diventano una forma che puoi spostare, ridimensionare e ruotare: adattata sopra di esse "
+          "(un piano poggia su di esse, rivolto dalla loro parte; una rampa o un cuneo sale dove salgono loro), "
+          "con tipo e nomi mantenuti se tutte li condividono, e le facce stesse tolte. Un solo Annulla le riporta.",
           "Las caras elegidas pasan a ser una forma que puedes mover, redimensionar y girar: ajustada sobre ellas "
           "(un plano se apoya en ellas, mirando hacia donde miran; una rampa o cuña sube hacia donde suben), con "
           "su tipo y nombres si todas los comparten, y las caras quitadas. Un Deshacer las devuelve."}},
-        {S::map_camera, {"Camera:", nullptr, nullptr, nullptr, "Cámara:"}},
-        {S::map_camera_orbit, {"Orbit", nullptr, nullptr, nullptr, "Órbita"}},
-        {S::map_camera_fps, {"First person", nullptr, nullptr, nullptr, "Primera persona"}},
+        {S::map_camera, {"Camera:", "Caméra :", "Kamera:", "Telecamera:", "Cámara:"}},
+        {S::map_camera_orbit, {"Orbit", "Orbite", "Orbit", "Orbita", "Órbita"}},
+        {S::map_camera_fps,
+         {"First person", "Première personne", "Ego-Perspektive", "Prima persona", "Primera persona"}},
         {S::map_camera_hint,
          {"Left drag in the picture. Orbit: the camera circles the point in front of it. First person: it stays "
-          "where it is and looks around. Right or middle drag, W A S D, Q E and the wheel move it the same in both.",
-          nullptr, nullptr, nullptr,
+          "where it is and looks around. Right or middle drag, W A S D, Q E and the wheel move it the same in "
+          "both.",
+          "Glisser à gauche dans l'image. Orbite : la caméra tourne autour du point devant elle. Première personne "
+          ": elle reste où elle est et regarde autour. Glisser à droite ou au milieu, W A S D, Q E et la molette "
+          "la déplacent de la même façon dans les deux.",
+          "Mit der linken Taste im Bild ziehen. Orbit: Die Kamera kreist um den Punkt vor ihr. Ego-Perspektive: "
+          "Sie bleibt, wo sie ist, und schaut sich um. Rechts oder mittig ziehen, W A S D, Q E und das Mausrad "
+          "bewegen sie in beiden gleich.",
+          "Trascina col sinistro nell'immagine. Orbita: la telecamera gira attorno al punto davanti a sé. Prima "
+          "persona: resta dov'è e si guarda intorno. Trascinare col destro o col centrale, W A S D, Q E e la "
+          "rotella la muovono allo stesso modo in entrambe.",
           "Arrastrar con el izquierdo en la imagen. Órbita: la cámara gira alrededor del punto que tiene delante. "
           "Primera persona: se queda donde está y mira alrededor. Arrastrar con el derecho o el central, W A S D, "
           "Q E y la rueda la mueven igual en los dos."}},
-        {S::map_fov, {"FOV:", nullptr, nullptr, nullptr, "FOV:"}},
+        {S::map_fov, {"FOV:", "FOV :", "FOV:", "FOV:", "FOV:"}},
         {S::map_fov_hint,
          {"The camera's field of view over the picture's height, in degrees (10 to 120). Drag left or right, or "
           "double-click to type a value. Right-click: back to 35.",
-          nullptr, nullptr, nullptr,
+          "Le champ de vision de la caméra sur la hauteur de l'image, en degrés (10 à 120). Glissez à gauche ou à "
+          "droite, ou double-cliquez pour taper une valeur. Clic droit : retour à 35.",
+          "Das Sichtfeld der Kamera über die Höhe des Bildes, in Grad (10 bis 120). Nach links oder rechts ziehen "
+          "oder doppelklicken, um einen Wert einzugeben. Rechtsklick: zurück auf 35.",
+          "Il campo visivo della telecamera sull'altezza dell'immagine, in gradi (da 10 a 120). Trascina a "
+          "sinistra o a destra, o fai doppio clic per scrivere un valore. Clic destro: torna a 35.",
           "El campo de visión de la cámara sobre el alto de la imagen, en grados (10 a 120). Arrastrar a la "
           "izquierda o a la derecha, o doble clic para escribir un valor. Clic derecho: vuelve a 35."}},
-        {S::map_tools_header, {"Map editor", nullptr, nullptr, nullptr, "Editor del mapa"}},
+        {S::map_tools_header,
+         {"Map editor", "Éditeur de carte", "Karteneditor", "Editor della mappa", "Editor del mapa"}},
         {S::map_tools_hint,
-         {"The room's own tools (replacing it, its collision, its markers), folded away while a mission is "
-          "edited beside it. Pick the mission in the catalog to see it on the right again.",
-          nullptr, nullptr, nullptr,
-          "Las herramientas de la sala (reemplazarla, su colisión, sus marcadores), plegadas mientras se edita "
-          "una misión a su lado. Elige la misión en el catálogo para volver a verla a la derecha."}},
-        {S::mission_tree_day, {"Day {0}", nullptr, nullptr, nullptr, "Día {0}"}},
-        {S::mission_tree_days, {"Days {0}-{1}", nullptr, nullptr, nullptr, "Días {0}-{1}"}},
-        {S::mission_tree_mode, {"Mission Mode", nullptr, nullptr, nullptr, "Modo Misión"}},
-        {S::mission_tree_story, {"story days", nullptr, nullptr, nullptr, "días de la historia"}},
-        {S::mission_tip_spawner, {"Spawner {0} · group {1}", nullptr, nullptr, nullptr, "Generador {0} · grupo {1}"}},
-        {S::mission_tip_enemy, {"{0} x {1}", nullptr, nullptr, nullptr, "{0} x {1}"}},
+         {"The room's own tools (replacing it, its collision, its markers), folded away while a mission is edited "
+          "beside it. Pick the mission in the catalog to see it on the right again.",
+          "Les outils de la salle (la remplacer, sa collision, ses repères), repliés pendant qu'une mission est "
+          "éditée à côté. Choisissez la mission dans le catalogue pour la revoir à droite.",
+          "Die Werkzeuge des Raums (ihn ersetzen, seine Kollision, seine Marker), eingeklappt, während daneben "
+          "eine Mission bearbeitet wird. Wähle die Mission im Katalog, um sie wieder rechts zu sehen.",
+          "Gli strumenti della stanza (sostituirla, la sua collisione, i suoi segnaposti), ripiegati mentre "
+          "accanto si modifica una missione. Scegli la missione nel catalogo per rivederla a destra.",
+          "Las herramientas de la sala (reemplazarla, su colisión, sus marcadores), plegadas mientras se edita una "
+          "misión a su lado. Elige la misión en el catálogo para volver a verla a la derecha."}},
+        {S::mission_tree_day, {"Day {0}", "Jour {0}", "Tag {0}", "Giorno {0}", "Día {0}"}},
+        {S::mission_tree_days, {"Days {0}-{1}", "Jours {0}-{1}", "Tage {0}-{1}", "Giorni {0}-{1}", "Días {0}-{1}"}},
+        {S::mission_tree_mode, {"Mission Mode", "Mode Mission", "Missionsmodus", "Modalità Missioni", "Modo Misión"}},
+        {S::mission_tree_story,
+         {"story days", "jours de l'histoire", "Tage der Geschichte", "giorni della storia", "días de la historia"}},
+        {S::mission_tip_spawner,
+         {"Spawner {0} · group {1}", "Générateur {0} · groupe {1}", "Erzeuger {0} · Gruppe {1}",
+          "Generatore {0} · gruppo {1}", "Generador {0} · grupo {1}"}},
+        {S::mission_tip_enemy, {"{0} x {1}", "{0} x {1}", "{0} x {1}", "{0} x {1}", "{0} x {1}"}},
         {S::mission_tip_no_enemies,
-         {"no enemies in its group", nullptr, nullptr, nullptr, "su grupo no tiene enemigos"}},
-        {S::mission_tip_chest, {"Chest {0}", nullptr, nullptr, nullptr, "Cofre {0}"}},
+         {"no enemies in its group", "aucun ennemi dans son groupe", "keine Gegner in seiner Gruppe",
+          "nessun nemico nel suo gruppo", "su grupo no tiene enemigos"}},
+        {S::mission_tip_chest, {"Chest {0}", "Coffre {0}", "Truhe {0}", "Forziere {0}", "Cofre {0}"}},
         {S::mission_tip_chest_info,
-         {"contents key {0} · facing {1} degrees", nullptr, nullptr, nullptr,
+         {"contents key {0} · facing {1} degrees", "clé du contenu {0} · tourné à {1} degrés",
+          "Inhaltsschlüssel {0} · Ausrichtung {1} Grad", "chiave del contenuto {0} · rivolto a {1} gradi",
           "clave del contenido {0} · mirando a {1} grados"}},
-        {S::mission_see_spawner, {"See spawner", nullptr, nullptr, nullptr, "Ver generador"}},
-        {S::mission_see_chest, {"See chest", nullptr, nullptr, nullptr, "Ver cofre"}},
-        {S::mission_see_emblem, {"See emblem", nullptr, nullptr, nullptr, "Ver emblema"}},
+        {S::mission_see_spawner,
+         {"See spawner", "Voir le générateur", "Erzeuger zeigen", "Vedi il generatore", "Ver generador"}},
+        {S::mission_see_chest, {"See chest", "Voir le coffre", "Truhe zeigen", "Vedi il forziere", "Ver cofre"}},
+        {S::mission_see_emblem, {"See emblem", "Voir l'emblème", "Emblem zeigen", "Vedi l'emblema", "Ver emblema"}},
         {S::tree_worlds, {"Worlds", "Mondes", "Welten", "Mondi", "Mundos"}},
-        {S::mission_sum_spawners, {"Spawners ({0})", nullptr, nullptr, nullptr, "Generadores ({0})"}},
+        {S::mission_sum_spawners,
+         {"Spawners ({0})", "Générateurs ({0})", "Erzeuger ({0})", "Generatori ({0})", "Generadores ({0})"}},
         {S::map_point_handles_keys,
          {"Arrows: along an axis · square: over the ground · ring: turn · Ctrl snaps · right click puts it back",
-          nullptr, nullptr, nullptr,
+          "Flèches : sur un axe · carré : sur le sol · anneau : tourner · Ctrl aimante · clic droit le remet en "
+          "place",
+          "Pfeile: entlang einer Achse · Quadrat: über den Boden · Ring: drehen · Strg rastet ein · Rechtsklick "
+          "setzt es zurück",
+          "Frecce: lungo un asse · quadrato: sul pavimento · anello: ruota · Ctrl aggancia · clic destro lo "
+          "rimette a posto",
           "Flechas: por un eje · cuadrado: sobre el suelo · anillo: girar · Ctrl ajusta · clic derecho lo devuelve"}},
-        {S::tree_room_kh2, {"{0} (KH2 Map {1})", nullptr, nullptr, nullptr, "{0} (mapa {1} de KH2)"}},
-        {S::mission_tip_emblem, {"Emblem {0} · kind {1}", nullptr, nullptr, nullptr, "Emblema {0} · tipo {1}"}},
-        {S::mission_emblem_kind, {"kind {0}", nullptr, nullptr, nullptr, "tipo {0}"}},
+        {S::tree_room_kh2,
+         {"{0} (KH2 Map {1})", "{0} (carte {1} de KH2)", "{0} (KH2-Karte {1})", "{0} (mappa {1} di KH2)",
+          "{0} (mapa {1} de KH2)"}},
+        {S::mission_tip_emblem,
+         {"Emblem {0} · kind {1}", "Emblème {0} · type {1}", "Emblem {0} · Art {1}", "Emblema {0} · tipo {1}",
+          "Emblema {0} · tipo {1}"}},
+        {S::mission_emblem_kind, {"kind {0}", "type {0}", "Art {0}", "tipo {0}", "tipo {0}"}},
         {S::mission_emblem_kind_hint,
          {"The emblem's kind as the mission's data holds it (its second byte, handed to the game when the emblem "
           "is placed). What each kind looks like or does has not been worked out yet.",
-          nullptr, nullptr, nullptr,
+          "Le type de l'emblème tel que les données de la mission le gardent (son deuxième octet, transmis au jeu "
+          "quand l'emblème est placé). L'apparence ou l'effet de chaque type n'est pas encore connu.",
+          "Die Art des Emblems, wie die Daten der Mission sie halten (sein zweites Byte, das dem Spiel beim "
+          "Platzieren des Emblems übergeben wird). Wie jede Art aussieht oder was sie bewirkt, ist noch nicht "
+          "herausgefunden.",
+          "Il tipo dell'emblema come lo tengono i dati della missione (il suo secondo byte, passato al gioco "
+          "quando l'emblema viene piazzato). Che aspetto abbia o cosa faccia ogni tipo non è ancora noto.",
           "El tipo del emblema tal como lo guardan los datos de la misión (su segundo byte, que el juego recibe al "
           "colocarlo). Aún no se sabe qué aspecto tiene ni qué hace cada tipo."}},
         {S::map_marker_bar_wait,
-         {"Getting the room ready to move it...", nullptr, nullptr, nullptr, "Preparando la sala para moverlo..."}},
-        {S::map_saving, {"Saving into {0}...", nullptr, nullptr, nullptr, "Guardando en {0}..."}},
+         {"Getting the room ready to move it...", "Préparation de la salle pour le déplacer...",
+          "Der Raum wird zum Verschieben vorbereitet...", "Preparazione della stanza per spostarlo...",
+          "Preparando la sala para moverlo..."}},
+        {S::map_saving,
+         {"Saving into {0}...", "Enregistrement dans {0}...", "Speichern in {0}...", "Salvataggio in {0}...",
+          "Guardando en {0}..."}},
         {S::map_reverting,
-         {"Giving the room back to the game in {0}...", nullptr, nullptr, nullptr,
+         {"Giving the room back to the game in {0}...", "Retour de la salle au jeu dans {0}...",
+          "Der Raum wird in {0} dem Spiel zurückgegeben...", "Restituzione della stanza al gioco in {0}...",
           "Devolviendo la sala al juego en {0}..."}},
         {S::map_save_step_copy,
-         {"copying the model files", nullptr, nullptr, nullptr, "copiando los archivos del modelo"}},
+         {"copying the model files", "copie des fichiers du modèle", "Modelldateien werden kopiert",
+          "copia dei file del modello", "copiando los archivos del modelo"}},
         {S::map_save_step_room,
-         {"room {0}: floor and walls", nullptr, nullptr, nullptr, "sala {0}: suelos y paredes"}},
+         {"room {0}: floor and walls", "salle {0} : sols et murs", "Raum {0}: Böden und Wände",
+          "stanza {0}: pavimenti e muri", "sala {0}: suelos y paredes"}},
         {S::map_save_step_archive,
-         {"writing and checking the world's archive", nullptr, nullptr, nullptr,
+         {"writing and checking the world's archive", "écriture et vérification de l'archive du monde",
+          "Archiv der Welt wird geschrieben und geprüft", "scrittura e controllo dell'archivio del mondo",
           "escribiendo y comprobando el archivo del mundo"}},
-        {S::map_save_step_models, {"room {0}: models", nullptr, nullptr, nullptr, "sala {0}: modelos"}},
-        {S::map_save_step_finish, {"finishing", nullptr, nullptr, nullptr, "terminando"}},
+        {S::map_save_step_models,
+         {"room {0}: models", "salle {0} : modèles", "Raum {0}: Modelle", "stanza {0}: modelli", "sala {0}: modelos"}},
+        {S::map_save_closing,
+         {"Finishing the save into {0}; the window closes when it is done.",
+          "Fin de l'enregistrement dans {0} ; la fenêtre se fermera ensuite.",
+          "Das Speichern in {0} wird abgeschlossen; danach schließt sich das Fenster.",
+          "Completamento del salvataggio in {0}; poi la finestra si chiuderà.",
+          "Terminando de guardar en {0}; la ventana se cerrará al acabar."}},
+        {S::map_save_step_finish, {"finishing", "finalisation", "wird abgeschlossen", "completamento", "terminando"}},
         {S::mission_see_point_hint,
          {"Shows its room and rings it for a few seconds; the camera stays where it is (an arrow at the edge "
           "points to it when it is out of view).",
-          nullptr, nullptr, nullptr,
+          "Montre sa salle et l'entoure d'un anneau quelques secondes ; la caméra ne bouge pas (une flèche au bord "
+          "le désigne quand il est hors de vue).",
+          "Zeigt seinen Raum und umkreist es einige Sekunden; die Kamera bleibt, wo sie ist (ein Pfeil am Rand "
+          "zeigt darauf, wenn es nicht zu sehen ist).",
+          "Mostra la sua stanza e lo cerchia per qualche secondo; la telecamera resta dov'è (una freccia sul bordo "
+          "lo indica quando è fuori vista).",
           "Muestra su sala y lo rodea unos segundos; la cámara no se mueve (una flecha en el borde lo señala "
           "cuando no se ve)."}},
-        {S::mission_tree_worlds, {"{0} worlds", nullptr, nullptr, nullptr, "{0} mundos"}},
-        {S::mission_head_title, {"Mission {0}: {1}", nullptr, nullptr, nullptr, "Misión {0}: {1}"}},
+        {S::mission_tree_worlds, {"{0} worlds", "{0} mondes", "{0} Welten", "{0} mondi", "{0} mundos"}},
+        {S::mission_head_title,
+         {"Mission {0}: {1}", "Mission {0} : {1}", "Mission {0}: {1}", "Missione {0}: {1}", "Misión {0}: {1}"}},
         {S::mission_head_unlisted,
-         {"Not in the story's mission list", nullptr, nullptr, nullptr,
+         {"Not in the story's mission list", "Absente de la liste des missions de l'histoire",
+          "Nicht in der Missionsliste der Geschichte", "Non è nella lista delle missioni della storia",
           "No está en la lista de misiones de la historia"}},
         {S::mission_head_counts,
-         {"{0} spawners · {1} chests · {2} emblems", nullptr, nullptr, nullptr,
+         {"{0} spawners · {1} chests · {2} emblems", "{0} générateurs · {1} coffres · {2} emblèmes",
+          "{0} Erzeuger · {1} Truhen · {2} Embleme", "{0} generatori · {1} forzieri · {2} emblemi",
           "{0} generadores · {1} cofres · {2} emblemas"}},
         {S::kind_mission, {"Missions", "Missions", "Missionen", "Missioni", "Misiones"}},
         {S::mission_header,

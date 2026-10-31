@@ -14,6 +14,7 @@
 #include <cmath>
 #include <fstream>
 #include <iterator>
+#include <map>
 
 using namespace studio;
 
@@ -600,6 +601,146 @@ TEST(a_room_is_saved_into_a_mod_and_given_back) {
     // a room with no collision in the game's data cannot be replaced
     r.room = 1;
     CHECK(!save_change(dir / "nitrofs", dir / "dump", mod, r, dir / "in" / "floor.gltf", {}, &o, &why));
+}
+
+namespace {
+
+// Every file a mod holds outside studio/ (what the port reads), by its name in the mod.
+std::map<std::string, std::string> outputs_of(const std::filesystem::path& mod) {
+    namespace fs = std::filesystem;
+    std::map<std::string, std::string> files;
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(mod, ec); !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
+        const auto name = fs::relative(it->path(), mod, ec).generic_string();
+        if (!it->is_regular_file(ec) || name.rfind("studio/", 0) == 0)
+            continue;
+        std::ifstream in(it->path(), std::ios::binary);
+        files[name] = std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    }
+    return files;
+}
+
+// What a save of `mod`'s changes must give: the same studio/ folder saved from nothing in another mod.
+std::map<std::string, std::string> saved_from_nothing(const std::filesystem::path& dir,
+                                                      const std::filesystem::path& mod) {
+    namespace fs = std::filesystem;
+    const fs::path fresh = dir / "mods" / "Fresh";
+    std::error_code ec;
+    fs::remove_all(fresh, ec);
+    fs::create_directories(fresh, ec);
+    fs::copy(mod / "studio", fresh / "studio", fs::copy_options::recursive, ec);
+    fs::remove(fresh / "studio" / "rooms" / "zz" / "save.cache", ec);
+    fs::remove(fresh / "studio" / "rooms" / "zz" / "written.list", ec);
+    WorldOutcome o;
+    std::string why;
+    CHECK(write_world_outputs(dir / "nitrofs", dir / "dump", fresh, "zz", &o, &why));
+    return outputs_of(fresh);
+}
+
+// The synthetic world zz of a_room_is_saved_into_a_mod_and_given_back, its room 0 replaced by a 10 x 10 floor in
+// mod Test; the mod's folder.
+std::filesystem::path saved_room(const std::filesystem::path& dir) {
+    namespace assets = khdays::assets;
+    studio_test::write(dir / "nitrofs" / "mi" / "wd" / "wd_zz", [&] {
+        const Bytes f = p2({room_table(), gate_models(), write_collision(room()), Bytes(64, 0x11), Bytes()});
+        return std::string(f.begin(), f.end());
+    }());
+    studio_test::write(dir / "dump" / "mi" / "wd" / "wd_zz#3" / "mdl" / "zz_room.gltf", "{}");
+    assets::NeutralModel floor;
+    assets::NeutralMesh mesh;
+    mesh.material_name = "floor";
+    for (const auto& p : std::vector<std::array<float, 3>>{{-5, 0, -5}, {-5, 0, 5}, {5, 0, 5}, {5, 0, -5}}) {
+        assets::NeutralVertex v;
+        v.position = p;
+        v.normal = {0, 1, 0};
+        mesh.vertices.push_back(v);
+    }
+    mesh.indices = {0, 1, 2, 0, 2, 3};
+    floor.meshes = {mesh};
+    studio_test::write(dir / "in" / "floor.gltf", assets::to_gltf(floor, {}));
+    const auto mod = dir / "mods" / "Test";
+    RoomReplacement r;
+    r.world = "zz";
+    r.room = 0;
+    WorldOutcome o;
+    std::string why;
+    CHECK(save_change(dir / "nitrofs", dir / "dump", mod, r, dir / "in" / "floor.gltf", {}, &o, &why));
+    return mod;
+}
+
+}  // namespace
+
+TEST(a_save_takes_what_is_unchanged_from_the_last_and_gives_what_a_save_from_nothing_gives) {
+    namespace fs = std::filesystem;
+    const auto dir = studio_test::scratch("save_cache");
+    const auto mod = saved_room(dir);
+    const auto cache = mod / "studio" / "rooms" / "zz" / "save.cache";
+    const auto made = mod / "graphics" / "mi" / "wd" / "wd_zz#3" / "mdl" / "zz_room.gltf";
+    std::error_code ec;
+    CHECK(fs::exists(cache, ec) && fs::exists(made, ec));
+    const auto first = outputs_of(mod);
+    CHECK(first == saved_from_nothing(dir, mod));
+    WorldOutcome o, again;
+    std::string why;
+    const auto save = [&](WorldOutcome* out) {
+        return write_world_outputs(dir / "nitrofs", dir / "dump", mod, "zz", out, &why);
+    };
+    CHECK(save(&o) && save(&again));
+    CHECK(outputs_of(mod) == first && o.lines == again.lines);  // taken from the last save, told the same
+
+    // a cache cut short is not trusted: nothing of the mod lost (it once removed what it no longer listed)
+    {
+        std::ifstream in(cache, std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        studio_test::write(cache, text.substr(0, text.size() / 2));
+    }
+    CHECK(save(&o) && outputs_of(mod) == first && o.lines == again.lines);
+    // nor a damaged one
+    studio_test::write(cache, "khdays-studio save cache 2\nnot a cache at all\nend\t0000000000000000\n");
+    CHECK(save(&o) && outputs_of(mod) == first);
+
+    // a written model removed by hand is written again
+    fs::remove(made, ec);
+    CHECK(save(&o) && outputs_of(mod) == first);
+
+    // the modder's model changed with its size and time kept: seen all the same, the room made again
+    const auto model = mod / "studio" / "rooms" / "zz" / "0" / "floor.gltf";
+    const auto when = fs::last_write_time(model, ec);
+    std::string text;
+    {
+        std::ifstream in(model, std::ios::binary);
+        text.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    }
+    // the first corner's x from -5 to -5.25 (0xC0A00000 -> 0xC0A80000): one letter of the base64, the same size
+    const auto at = text.find("base64,AACgwA");
+    CHECK(at != std::string::npos);
+    text[at + 10] = 'o';
+    studio_test::write(model, text);
+    fs::last_write_time(model, when, ec);
+    CHECK(save(&o));
+    const auto changed = outputs_of(mod);
+    CHECK(changed != first && changed == saved_from_nothing(dir, mod));
+}
+
+TEST(a_room_that_cannot_be_given_back_stays_as_it_was) {
+    namespace fs = std::filesystem;
+    const auto dir = studio_test::scratch("give_back_fails");
+    const auto mod = saved_room(dir);
+    const auto before = outputs_of(mod);
+    WorldOutcome o;
+    std::string why;
+    // the player's copy gone: the world can't be made, so the room's change and models are put back
+    CHECK(!revert_change(dir / "no copy", dir / "dump", mod, "zz", 0, &o, &why));
+    std::error_code ec;
+    const auto rooms = mod / "studio" / "rooms" / "zz";
+    CHECK(fs::exists(rooms / "0.txt", ec) && fs::exists(rooms / "0" / "floor.gltf", ec));
+    CHECK(!fs::exists(rooms / "0.txt.giving-back", ec) && !fs::exists(rooms / "0.giving-back", ec));
+    CHECK(outputs_of(mod) == before);
+    // and given back for real afterwards: all gone
+    CHECK(revert_change(dir / "nitrofs", dir / "dump", mod, "zz", 0, &o, &why));
+    CHECK(!fs::exists(rooms, ec) && outputs_of(mod).empty());
 }
 
 TEST(a_rooms_markers_and_exits_move_with_nothing_else_changed) {

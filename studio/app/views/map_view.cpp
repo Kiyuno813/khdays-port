@@ -215,7 +215,6 @@ struct SaveJob {
     std::atomic<bool> running{false};
     // what was saved, kept to find the room it was of when it is done
     bool revert = false;
-    int mod = -1;
     std::string mod_name, world;
     int room = -1;
     fs::path mod_dir, model_source, collision_source;
@@ -3441,7 +3440,6 @@ void start_save(App& app, bool revert) {
     p.r.world = m.world.code;
     p.r.room = m.room->index;
     saving.revert = revert;
-    saving.mod = app.mod;
     saving.mod_name = mod->name;
     saving.world = m.world.code;
     saving.room = m.room->index;
@@ -3475,8 +3473,9 @@ void start_save(App& app, bool revert) {
 
 // Whether the room shown is the one the save was of.
 bool shown_saved_room(const App& app) {
-    return m.room != nullptr && m.mod == saving.mod && app.mod == saving.mod && m.world.code == saving.world &&
-           m.room->index == saving.room;
+    const Mod* mod = app.current_mod();
+    return m.room != nullptr && mod != nullptr && mod->dir == saving.mod_dir && m.mod == app.mod &&
+           m.world.code == saving.world && m.room->index == saving.room;
 }
 
 // How far the save is, as a bar ("Saving into Twilight Town: room 4's floor and walls, 3 of 14").
@@ -3488,16 +3487,17 @@ void draw_save_progress(App& app) {
         now = saving.progress;
     }
     const std::string room = std::to_string(now.room);
-    const std::string step = now.stage == SaveProgress::copying   ? tr(lang, S::map_save_step_copy)
-                             : now.stage == SaveProgress::building    ? fmt(lang, S::map_save_step_room, {room})
-                             : now.stage == SaveProgress::archive ? tr(lang, S::map_save_step_archive)
-                             : now.stage == SaveProgress::models  ? fmt(lang, S::map_save_step_models, {room})
-                                                                  : tr(lang, S::map_save_step_finish);
-    ImGui::TextUnformatted(
-        fmt(lang, saving.revert ? S::map_reverting : S::map_saving, {saving.mod_name}).c_str());
+    const std::string step = now.stage == SaveProgress::copying    ? tr(lang, S::map_save_step_copy)
+                             : now.stage == SaveProgress::building ? fmt(lang, S::map_save_step_room, {room})
+                             : now.stage == SaveProgress::archive  ? tr(lang, S::map_save_step_archive)
+                             : now.stage == SaveProgress::models   ? fmt(lang, S::map_save_step_models, {room})
+                                                                   : tr(lang, S::map_save_step_finish);
+    ImGui::TextUnformatted(fmt(lang, saving.revert ? S::map_reverting : S::map_saving, {saving.mod_name}).c_str());
     const float total = static_cast<float>(std::max(1, now.total));
-    const std::string over = step + "  (" + std::to_string(std::min(now.done + 1, now.total)) + " / " +
-                             std::to_string(now.total) + ")";
+    // the model files are copied before the steps are counted: no count then
+    const std::string over = now.total <= 0 ? step
+                                            : step + "  (" + std::to_string(std::min(now.done + 1, now.total)) + " / " +
+                                                  std::to_string(now.total) + ")";
     ImGui::ProgressBar(static_cast<float>(now.done) / total, ImVec2(-1, 0), over.c_str());
 }
 
@@ -3957,6 +3957,10 @@ void draw_map_view(App& app, const Item& item) {
 
 bool map_saving() {
     return saving.running;
+}
+
+std::string map_saving_into() {
+    return saving.mod_name;  // set before the save starts, left alone while it runs
 }
 
 void map_save_poll(App& app) {

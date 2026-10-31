@@ -212,8 +212,7 @@ settings.
      places edited differently keep the first (red). Tiles drawn flipped and
      tiles drawn with several palettes are listed too.
 
-7. **A map.** An illustrated guide to everything below is in
-   `docs/map-editor/index.html`. While a room is shown, its picture fills the
+7. **A map.** While a room is shown, its picture fills the
    right side and its controls -- replacing it, editing its collision, what is
    picked, its lists -- sit in the left panel under the catalog; the line
    between them, and the one between the two panels, are dragged to share the
@@ -256,16 +255,18 @@ settings.
      `graphics/mi/wd/wd_<code>#<entry>/mdl/<model>.gltf`; the change itself
      and your model stay in `studio/rooms/<code>/`, which is what to share
      (never the game's files). The port draws a replaced room whether HD
-     graphics are on or off. Saving (and "Revert") runs beside the window,
-     several rooms made at once (up to six; a world of twelve KH2 rooms in
-     about 5 seconds), and only the rooms whose change or model files
-     changed since the last save made again (the others taken from what that
-     save wrote, `studio/rooms/<code>/save.cache` saying what each was made
-     from; a new build of the studio, another copy of the game or an output
-     file changed by hand makes them again), a bar over the picture and in
-     step 4 saying which room it is at; the
-     mod can't be switched until it is done. "Yours", "Original DS" and
-     "Both" over the picture switch what is shown.
+     graphics are on or off. Saving (and "Give the room back to the game")
+     runs beside the window, several rooms made at once (up to six; a world
+     of twelve KH2 rooms in about 5 seconds), and only the rooms whose change
+     or model files changed since the last save made again (the others taken
+     from what that save wrote, `studio/rooms/<code>/save.cache` saying what
+     each was made from, by what the files hold; a new build of the studio,
+     another copy of the game, an output file changed by hand or a cache cut
+     short makes them again; a mod can be shared without it), a bar over the
+     picture and in step 4 saying which room it is at; the mod can't be
+     switched, nor a new one made, until it is done, and closing the window
+     waits for it. A room that can't be given back stays as it was.
+     "Yours", "Original DS" and "Both" over the picture switch what is shown.
    - **Exits, walls that open, surface tags.** The room's names -- its exits
      (`gate06`: walking into a face that carries it takes the exit), its walls
      that open (`col_wall..`) and the surface tags (`slide`: a slope that

@@ -112,7 +112,10 @@ void draw_mod_bar(App& app) {
         ImGui::EndCombo();
     }
     same_line_if_room(button_width(tr(app.language, S::mod_new)));
-    if (ImGui::Button(tr(app.language, S::mod_new))) {
+    ImGui::BeginDisabled(map_saving());  // a mod made meanwhile would change which one is chosen
+    const bool make_mod = ImGui::Button(tr(app.language, S::mod_new));
+    ImGui::EndDisabled();
+    if (make_mod) {
         new_name.clear();
         new_error.clear();
         ImGui::OpenPopup("###newmod");

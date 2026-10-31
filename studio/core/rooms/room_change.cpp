@@ -200,6 +200,7 @@ bool write_room_model(const std::filesystem::path& mod_dir, const std::string& k
         [&](const std::filesystem::path& temporary) -> std::string {
             std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
             out << text;
+            out.close();  // what the buffer still holds written now, its failure seen
             return out ? std::string() : std::string("could not be written");
         },
         [&](const std::filesystem::path& temporary) -> std::string {
@@ -1229,6 +1230,20 @@ std::string hex(std::uint64_t v) {
     return text;
 }
 
+// The hash of a file's bytes (read a piece at a time), on `f`.
+void add_file(Fnv& f, const std::filesystem::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    std::vector<char> piece(1 << 20);
+    std::uint64_t size = 0;
+    while (in) {
+        in.read(piece.data(), static_cast<std::streamsize>(piece.size()));
+        const auto got = static_cast<std::size_t>(in.gcount());
+        f.add(piece.data(), got);
+        size += got;
+    }
+    f.add(size);
+}
+
 std::string file_bytes(const std::filesystem::path& file) {
     std::ifstream in(file, std::ios::binary);
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -1291,7 +1306,8 @@ struct SaveCache {
     std::map<int, Room> rooms;
     std::map<int, Member> members;
 };
-constexpr const char* kCacheHeading = "khdays-studio save cache 1";
+// 2: an end line (the hash of all before it); a cache without it, cut short, is not trusted
+constexpr const char* kCacheHeading = "khdays-studio save cache 2";
 
 std::filesystem::path cache_file(const std::filesystem::path& mod_dir, const std::string& code) {
     return rooms_folder(mod_dir, code) / "save.cache";
@@ -1312,11 +1328,21 @@ std::vector<std::string> fields(const std::string& line, std::size_t parts) {
     return out;
 }
 
-// The cache of `code`'s last save when it was made by this program over this copy of the world (`stamp`);
-// empty otherwise.
+// The text before a cache's end line when that line holds its hash: the whole cache, else "" (cut short,
+// damaged or not there).
+std::string whole_cache(const std::string& text) {
+    const auto end = text.rfind("end\t");
+    if (end == std::string::npos || (end != 0 && text[end - 1] != '\n'))
+        return {};
+    const std::string body = text.substr(0, end);
+    return text.substr(end) == "end\t" + hex(Fnv().add(body).h) + "\n" ? body : std::string();
+}
+
+// The cache of `code`'s last save when it was made by this program over this copy of the world (`stamp`) and
+// is whole; empty otherwise.
 SaveCache read_cache(const std::filesystem::path& mod_dir, const std::string& code, const std::string& stamp) {
     SaveCache c;
-    std::istringstream in(file_bytes(cache_file(mod_dir, code)));
+    std::istringstream in(whole_cache(file_bytes(cache_file(mod_dir, code))));
     std::string line;
     if (!std::getline(in, line) || line != kCacheHeading || !std::getline(in, line) || line != "stamp\t" + stamp)
         return c;
@@ -1403,22 +1429,34 @@ bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesy
         has_last =
             !bytes.empty() && parse_world(std::vector<std::uint8_t>(bytes.begin(), bytes.end()), code, &last, &unused);
     }
-    std::vector<std::string> made_from(changes.size());  // per change: its file and its models' files
+    // per change: its file and its models' files, by what they hold (an edit keeping a file's size and time is
+    // seen too); the changes at once, hundreds of megabytes read for a world of KH2 rooms
+    std::vector<std::string> made_from(changes.size());
+    std::vector<std::string> unread;
+    each_at_once(
+        changes.size(),
+        [&](std::size_t i) {
+            Fnv f;
+            f.add(file_bytes(change_file(mod_dir, code, changes[i].room)));
+            std::error_code walk;
+            std::vector<std::filesystem::path> files;
+            const auto folder = change_models(mod_dir, code, changes[i].room);
+            for (auto it = std::filesystem::recursive_directory_iterator(folder, walk);
+                 !walk && it != std::filesystem::recursive_directory_iterator(); it.increment(walk)) {
+                if (it->is_regular_file(walk))
+                    files.push_back(it->path());
+            }
+            std::sort(files.begin(), files.end());
+            for (const auto& file : files) {
+                f.add(u8(std::filesystem::relative(file, folder, walk)));
+                add_file(f, file);
+            }
+            made_from[i] = hex(f.h);
+        },
+        &unread);
     for (std::size_t i = 0; i < changes.size(); ++i) {
-        Fnv f;
-        f.add(file_bytes(change_file(mod_dir, code, changes[i].room)));
-        std::vector<std::pair<std::string, std::string>> files;
-        const auto folder = change_models(mod_dir, code, changes[i].room);
-        for (auto it = std::filesystem::recursive_directory_iterator(folder, ec);
-             !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
-            if (it->is_regular_file(ec))
-                files.emplace_back(u8(std::filesystem::relative(it->path(), folder, ec)), file_mark(it->path()));
-        }
-        ec.clear();
-        std::sort(files.begin(), files.end());
-        for (const auto& [name, mark] : files)
-            f.add(name).add(mark);
-        made_from[i] = hex(f.h);
+        if (!unread[i].empty())
+            made_from[i].clear();  // nothing matches it: made again
     }
     const auto index_of = [&](const RoomReplacement* r) { return static_cast<std::size_t>(r - changes.data()); };
     const auto entry_hash = [](const std::vector<std::uint8_t>& data) {
@@ -1468,7 +1506,7 @@ bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesy
             const std::string room = "room " + std::to_string(r.room) + ": ";
             // made from the same as the last save: its collision taken from the archive that save wrote
             if (const auto was = cache.rooms.find(r.room);
-                was != cache.rooms.end() && was->second.from == made_from[i]) {
+                !made_from[i].empty() && was != cache.rooms.end() && was->second.from == made_from[i]) {
                 const int member = w.rooms[static_cast<std::size_t>(r.room)].collision_member;
                 if (was->second.untouched) {
                     c.untouched = c.reused = true;
@@ -1562,6 +1600,7 @@ bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesy
         [&](const std::filesystem::path& temporary) -> std::string {
             std::ofstream f(temporary, std::ios::binary | std::ios::trunc);
             f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            f.close();
             return f ? std::string() : std::string("could not be written");
         },
         [&](const std::filesystem::path& temporary) -> std::string {
@@ -1669,7 +1708,13 @@ bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesy
                 if (was != cache.members.end() && was->second.from == m.from &&
                     (m.use != ObjectUse::model || r.zone < 0 ||
                      (room_was != cache.rooms.end() && room_was->second.has_zone))) {
+                    // every model of it listed, each listed file still as written
                     bool same = true;
+                    for (const auto& key : keys) {
+                        const std::string gltf = "graphics/" + key + ".gltf";
+                        same = same && std::any_of(was->second.files.begin(), was->second.files.end(),
+                                                   [&](const auto& file) { return file.first == gltf; });
+                    }
                     for (const auto& [file, mark] : was->second.files)
                         same = same && file_mark(mod_dir / path_u8(file)) == mark;
                     if (same) {
@@ -1753,6 +1798,7 @@ bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesy
         [&](const std::filesystem::path& temporary) -> std::string {
             std::ofstream f(temporary, std::ios::binary | std::ios::trunc);
             f << list;
+            f.close();
             return f ? std::string() : std::string("could not be written");
         },
         [](const std::filesystem::path&) { return std::string(); });
@@ -1791,13 +1837,15 @@ bool write_world_outputs(const std::filesystem::path& nitrofs, const std::filesy
             for (const auto& file : m.written)
                 c << "mfile\t" << m.member << "\t" << file_mark(mod_dir / path_u8(file)) << "\t" << file << "\n";
         }
-        const std::string text = c.str();
+        std::string text = c.str();
+        text += "end\t" + hex(Fnv().add(text).h) + "\n";
         // not kept is no failure: the next save makes everything again
         (void)write_into_mod(
             mod_dir, cache_file(mod_dir, code),
             [&](const std::filesystem::path& temporary) -> std::string {
                 std::ofstream f(temporary, std::ios::binary | std::ios::trunc);
                 f << text;
+                f.close();
                 return f ? std::string() : std::string("could not be written");
             },
             [](const std::filesystem::path&) { return std::string(); });
@@ -1850,6 +1898,7 @@ bool save_change(const std::filesystem::path& nitrofs, const std::filesystem::pa
         [&](const std::filesystem::path& temporary) -> std::string {
             std::ofstream f(temporary, std::ios::binary | std::ios::trunc);
             f << text;
+            f.close();
             return f ? std::string() : std::string("could not be written");
         },
         [&](const std::filesystem::path& temporary) -> std::string {
@@ -1869,9 +1918,36 @@ bool revert_change(const std::filesystem::path& nitrofs, const std::filesystem::
     const auto file = change_file(mod_dir, code, room);
     if (!std::filesystem::exists(file, ec))
         return fail_with(why, "room " + std::to_string(room) + " of " + code + " is not replaced in this mod");
-    std::filesystem::remove(file, ec);
-    std::filesystem::remove_all(change_models(mod_dir, code, room), ec);
-    return write_world_outputs(nitrofs, graphics_dump, mod_dir, code, out, why, progress);
+    // the change and its models set aside (not a .txt: no longer read as a change), the world made without
+    // them, and only then removed; when the world can't be made they are put back, the mod as it was
+    const auto folder = change_models(mod_dir, code, room);
+    auto aside_file = file, aside_folder = folder;
+    aside_file += ".giving-back";
+    aside_folder += ".giving-back";
+    std::filesystem::remove(aside_file, ec);  // left by a studio stopped half way
+    std::filesystem::remove_all(aside_folder, ec);
+    std::filesystem::rename(file, aside_file, ec);
+    if (ec)
+        return fail_with(why, "cannot set " + u8(file) + " aside: " + ec.message());
+    const bool has_folder = std::filesystem::exists(folder, ec);
+    if (has_folder) {
+        std::filesystem::rename(folder, aside_folder, ec);
+        if (ec) {
+            const std::string problem = ec.message();
+            std::filesystem::rename(aside_file, file, ec);
+            return fail_with(why, "cannot set " + u8(folder) + " aside: " + problem);
+        }
+    }
+    if (!write_world_outputs(nitrofs, graphics_dump, mod_dir, code, out, why, progress)) {
+        std::filesystem::rename(aside_file, file, ec);
+        if (has_folder)
+            std::filesystem::rename(aside_folder, folder, ec);
+        return false;
+    }
+    std::filesystem::remove(aside_file, ec);
+    std::filesystem::remove_all(aside_folder, ec);
+    std::filesystem::remove(rooms_folder(mod_dir, code), ec);  // only when empty: no room replaced any more
+    return true;
 }
 
 }  // namespace studio
