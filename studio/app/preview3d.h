@@ -113,8 +113,9 @@ std::array<float, 3> orbit_ray(float yaw, float pitch, float x, float y, float w
 // pixels tall while the mouse is over it (`hovered`): dragged with the right
 // or middle button across the view, as far as the picture moves under the
 // mouse; W/S forward and back, A/D left and right, Q/E down and up (Shift:
-// four times as fast), half as far a second as the camera is from it. `fov` as the camera's.
+// four times as fast), half as far a second as the camera is from it. `fov` as the camera's. Without
+// `middle_moves` the middle button is left to the caller (the Map workshop turns the camera with it).
 void orbit_move(std::array<float, 3>& target, float yaw, float pitch, float distance, float view_height, bool hovered,
-                float fov = kOrbitFov);
+                float fov = kOrbitFov, bool middle_moves = true);
 
 }  // namespace studio

@@ -3959,6 +3959,36 @@ bool map_saving() {
     return saving.running;
 }
 
+float camera_controls_width(const App& app) {
+    const auto lang = app.language;
+    const float space = ImGui::GetStyle().ItemSpacing.x;
+    return fov_width(app) + space + ImGui::CalcTextSize(tr(lang, S::map_camera)).x + space +
+           button_width(tr(lang, S::map_camera_orbit)) + space + button_width(tr(lang, S::map_camera_fps));
+}
+
+void draw_camera_controls(App& app) {
+    const auto lang = app.language;
+    ImGui::PushID("camera_controls");
+    draw_fov_field(app);
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(tr(lang, S::map_camera));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tr(lang, S::map_camera_hint));
+    bool fps = app.settings.map_camera_fps;
+    ImGui::SameLine();
+    if (toggle_button(tr(lang, S::map_camera_orbit), !fps))
+        fps = false;
+    ImGui::SameLine();
+    if (toggle_button(tr(lang, S::map_camera_fps), app.settings.map_camera_fps))
+        fps = true;
+    if (fps != app.settings.map_camera_fps) {
+        app.settings.map_camera_fps = fps;
+        save_now(app);
+    }
+    ImGui::PopID();
+}
+
 void map_save_poll(App& app) {
     if (saving.running || !saving.worker.joinable())
         return;

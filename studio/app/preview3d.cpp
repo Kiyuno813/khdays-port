@@ -509,7 +509,7 @@ static float half_fov_tan(float fov) {
 }
 
 void orbit_move(std::array<float, 3>& target, float yaw, float pitch, float distance, float view_height, bool hovered,
-                float fov) {
+                float fov, bool middle_moves) {
     if (!hovered || view_height <= 0.0f)
         return;
     // the camera's own axes, as orbit_view_projection makes them
@@ -522,7 +522,8 @@ void orbit_move(std::array<float, 3>& target, float yaw, float pitch, float dist
             target[c] += v[c] * k;
     };
     const ImGuiIO& io = ImGui::GetIO();
-    if (ImGui::IsMouseDragging(ImGuiMouseButton_Right) || ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+    if (ImGui::IsMouseDragging(ImGuiMouseButton_Right) ||
+        (middle_moves && ImGui::IsMouseDragging(ImGuiMouseButton_Middle))) {
         // a pixel at the point's distance: the camera's view over its height
         const float per_pixel = 2.0f * distance * half_fov_tan(fov) / view_height;
         add(right, -io.MouseDelta.x * per_pixel);

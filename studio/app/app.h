@@ -42,6 +42,7 @@ struct App {
     std::filesystem::path mods_root;
     SDL_Window* window = nullptr;
     SDL_GPUDevice* device = nullptr;
+    bool workshop = false;  // the Map workshop tab shown instead of the catalog and its views
     std::unique_ptr<GpuImages> images;
     Language language = Language::en;
 
@@ -228,6 +229,21 @@ void draw_map_view(App& app, const Item& item);
 void draw_map_controls(App& app, const Item& item, bool panels = true);
 // A room being saved into the mod (or given back to the game) on its own thread: the mod can't be switched.
 bool map_saving();
+// The settings saved now, a failure told.
+void save_now(App& app);
+// A split line's thickness to grab.
+constexpr float kSplitLineGrip = 8.0f;
+// A line the modder drags between two panels, `length` long: `*at` (pixels) moved by the drag within
+// `lo`..`hi`, back to `first` on a double click. `across`: a line across (dragged up and down), else upright.
+// `always_drawn`: else only while pointed at or dragged. True when let go or reset: the time to save it.
+bool split_line(const char* id, bool across, float length, float* at, float lo, float hi, float first,
+                bool always_drawn);
+// The Maps view's camera controls in one row: its field of view, then Orbit / First person (kept in the
+// settings); `width` their width, to place them.
+void draw_camera_controls(App& app);
+float camera_controls_width(const App& app);
+// The Map workshop tab (views/workshop_view.cpp), `height` tall.
+void draw_workshop(App& app, float height);
 // Takes what a finished save left (told, the room shown updated); each frame.
 void map_save_poll(App& app);
 // A model file the modder offers for a game model (dropped, chosen, or the

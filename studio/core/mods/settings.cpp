@@ -112,14 +112,16 @@ Settings load_settings(const fs::path& root, std::string* note) {
                 read.theme = value;
             else if (key == "collection_1525")
                 read.collection_1525 = value;
-            else if (key == "browser_width" || key == "map_tree") {
+            else if (key == "browser_width" || key == "map_tree" || key == "workshop_width") {
                 // a share of the window: above 0, at most all of it
                 float share = 0.0f;
                 const auto r = std::from_chars(value.data(), value.data() + value.size(), share);
                 if (r.ec != std::errc() || r.ptr != value.data() + value.size() || !(share > 0.0f && share <= 1.0f))
                     good = false;
                 else
-                    (key == "map_tree" ? read.map_tree : read.browser_width) = share;
+                    (key == "map_tree"         ? read.map_tree
+                     : key == "workshop_width" ? read.workshop_width
+                                               : read.browser_width) = share;
             } else if (key == "map_fov") {
                 // degrees over the picture's height, as the FOV field allows
                 float fov = 0.0f;
@@ -182,6 +184,7 @@ bool save_settings(const Settings& s, std::string* why) {
             << "theme = " << s.theme << "\n"
             << "browser_width = " << s.browser_width << "\n"
             << "map_tree = " << s.map_tree << "\n"
+            << "workshop_width = " << s.workshop_width << "\n"
             << "map_camera = " << (s.map_camera_fps ? "first-person" : "orbit") << "\n"
             << "map_fov = " << s.map_fov << "\n"
             << "collection_1525 = " << s.collection_1525 << "\n";

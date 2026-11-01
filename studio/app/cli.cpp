@@ -15,6 +15,7 @@
 #include "core/models/model_export.h"
 #include "core/models/model_files.h"
 #include "core/rooms/kh2_source.h"
+#include "core/workshop/workshop.h"
 #include "core/rooms/room_change.h"
 #include "core/rooms/room_collision.h"
 #include "core/rooms/room_export.h"
@@ -421,6 +422,45 @@ int kh2_room(const fs::path& root, const std::vector<std::string>& args) {
         return 1;
     }
     print_kh2_made(args[2], made);
+    return 0;
+}
+
+// --workshop-export <project.khmap> <folder> <name>: a map workshop's project written out as the window's Export
+// does: <name>.gltf and <name>_collision.gltf in <folder>, each shown map placed and without what it deleted.
+int workshop_export(const fs::path& root, const std::vector<std::string>& args) {
+    WorkshopProject project;
+    std::string why;
+    if (!load_workshop(path_u8(args[1]), &project, &why)) {
+        std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+        return 1;
+    }
+    std::string note;
+    const Settings settings = load_settings(root, &note);
+    std::map<std::string, std::pair<khdays::assets::ImportedModel, khdays::assets::ImportedModel>> loaded;
+    for (const auto& m : project.maps) {
+        if (loaded.count(m.map) != 0)
+            continue;
+        auto& both = loaded[m.map];
+        if (!prepare_workshop_map(settings, m.map, &both.first, &both.second, &why)) {
+            std::fprintf(stderr, "khdays-studio: %s: %s\n", m.map.c_str(), why.c_str());
+            return 1;
+        }
+        std::printf("%s: %zu triangles, %zu of floors and walls\n", m.map.c_str(), triangle_count(both.first),
+                    triangle_count(both.second));
+    }
+    std::vector<const khdays::assets::ImportedModel*> models, collisions;
+    for (const auto& m : project.maps) {
+        const auto& both = loaded.at(m.map);
+        models.push_back(&both.first);
+        collisions.push_back(both.second.model.meshes.empty() ? nullptr : &both.second);
+    }
+    std::vector<std::string> written;
+    if (!export_workshop(project, models, collisions, path_u8(args[2]), args[3], &written, &why)) {
+        std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+        return 1;
+    }
+    for (const auto& file : written)
+        std::printf("%s written\n", file.c_str());
     return 0;
 }
 
@@ -1370,6 +1410,8 @@ int run_command_line(const fs::path& root, const std::vector<std::string>& args)
         return revert_room(root, args);
     if (args.size() == 2 && args[0] == "--rebuild-worlds")
         return rebuild_worlds(root, args);
+    if (args.size() == 4 && args[0] == "--workshop-export")
+        return workshop_export(root, args);
     if (args.size() >= 4 && args[0] == "--assemble")
         return assemble_sheet(root, args);
     if (args.size() == 2 && args[0] == "--arrangements")
@@ -1401,6 +1443,7 @@ int run_command_line(const fs::path& root, const std::vector<std::string>& args)
         "       khdays-studio [--port <dir>] --room-model <code> <room> <out.gltf>\n"
         "                                                  a room's models and collision, to build on\n"
         "       khdays-studio [--port <dir>] --kh2-room <map> <out.gltf> [<folder>]\n"
+        "       khdays-studio [--port <dir>] --workshop-export <project.khmap> <folder> <name>\n"
         "                                                  a KH2 map of the player's collection as a model\n"
         "       khdays-studio [--port <dir>] --kh2-maps [<world>]\n"
         "                                                  the KH2 maps of the player's copy, the Days rooms made from each\n"

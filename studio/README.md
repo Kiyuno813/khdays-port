@@ -462,6 +462,58 @@ settings.
 
 Sound loops and old-format mods come next.
 
+## Map workshop (prototype, branch Map-Workshop)
+
+"Map workshop" at the top right swaps the catalog and its views for a tab of
+its own, to stitch KINGDOM HEARTS II FINAL MIX maps of your collection into
+one model:
+
+- **Maps.** "KH2 maps of your collection" is a tree of KH2's worlds that
+  Days has too, named as the catalog names them (`tt - Twilight Town`), each
+  listing the maps your collection holds with KH2's place names (`tt08 -
+  Station Plaza`) when you open it. Click a map and Add (or double click it):
+  it is taken out of the collection and made the first time (as "A KH2 room"
+  makes it), then shown with its floors and walls. A map can be added twice.
+- **Layers.** The project's maps are listed like layers: click a row to pick
+  the map that "Where it sits" moves (Move, Turn about the vertical, Scale,
+  in KH2's units; "Look at it" brings the camera over it); its checkbox shows
+  or hides it; drag a row up or down to reorder the maps (a line shows where
+  it lands; Ctrl+Z undoes it). The order is the project file's and the
+  export's. Both lists keep their height (drag their bottom edge), so the
+  fields stay put. The panel's width is dragged at the line beside it (double
+  click: back to a third), kept in the settings (`workshop_width`); the field
+  of view and Orbit / First person over the picture are the Maps view's own.
+  Left or middle drag turns the camera (middle drag also in the Box tool),
+  right drag moves it.
+- **Pick and delete.** Piece (the triangles a click touches and every one
+  joined to them), Triangle, Box (what lies wholly in a dragged box; Alt+drag
+  or middle drag turns the camera) or Same texture (every triangle of that map with the
+  texture clicked: a stand-in drawn with its own pictures goes at once).
+  Shift adds, Ctrl takes away. "Pick in" chooses the models, the floors and
+  walls, or both (deleting a model's wall does not delete its collision: pick
+  both to take the two). Delete key or Delete deletes; Ctrl+Z and Ctrl+Y undo
+  and redo. "Pick from" chooses Kept (the default: deleted triangles are
+  never picked, even when "Deleted" shows them faint) or Deleted (to
+  restore): the same four tools then pick only deleted triangles (shown
+  faint, brighter once picked; clicks go through the kept ones in front),
+  and Restore or the R key brings them back.
+- **Project.** Save as... writes a `.khmap` file anywhere: the maps' names,
+  places and deleted triangles, nothing of the game (made again from the
+  player's own collection when opened). The triangles are counted as the
+  studio makes the map today: a studio that makes the maps differently later
+  would point at other triangles.
+- **Export.** `<name>.gltf` (every shown map placed, without what is deleted,
+  their moving pieces, scrolling and textures kept) and
+  `<name>_collision.gltf` in the folder chosen, in KH2's units: to replace a
+  room with, scale 0.01 in its Replace panel and the collision file as
+  "another, simpler model"; or to open in Blender.
+
+```
+.\build\studio\release\khdays-studio.exe --workshop-export <project.khmap> <folder> <name>
+```
+
+writes the same from a project file without the window.
+
 ## Command line
 
 ```powershell

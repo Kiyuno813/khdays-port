@@ -156,6 +156,7 @@ add_library(khdays-studio-core STATIC
     core/rooms/room_export.cpp
     core/mods/settings.cpp
     core/sheets/sheets.cpp
+    core/workshop/workshop.cpp
     core/rooms/worlds.cpp)
 target_include_directories(khdays-studio-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" ${KHDAYS_STUDIO_PORT_HEADERS})
 # The KH2 rooms' pairs (data/kh2_rooms.txt, names only) built into the studio.
@@ -179,6 +180,7 @@ add_executable(khdays-studio
     app/views/mission_view.cpp
     app/views/movie_view.cpp
     app/views/text_view.cpp
+    app/views/workshop_view.cpp
     app/views/mod_panel.cpp
     app/views/mods_console.cpp
     app/views/model_view.cpp
@@ -208,6 +210,7 @@ add_executable(khdays-studio-tests
     tests/test_missions.cpp
     tests/test_worlds.cpp
     tests/test_kh2.cpp
+    tests/test_workshop.cpp
     tests/test_mods_log.cpp
     app/strings.cpp
     tests/test_strings.cpp)

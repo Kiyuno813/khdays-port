@@ -22,6 +22,7 @@ struct Settings {
     // share of the left panel's height (the room's controls under it)
     float browser_width = 0.42f;
     float map_tree = 0.45f;
+    float workshop_width = 0.3f;  // the Map workshop's panel's share of the window's width
     // the Maps view's camera: looking around from where it stands (else orbiting the point in front of it)
     bool map_camera_fps = false;
     // the Maps view's field of view over the picture's height, in degrees (10 to 120)

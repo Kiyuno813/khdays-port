@@ -63,17 +63,19 @@ void take_dialog_files(App& app) {
 void draw_notices(App& app);  // below
 
 // The settings written now (a split let go of), a failure told.
+constexpr float kSplitGrip = kSplitLineGrip;
+
+// A line the modder drags between two panels, `length` long: `*at` (pixels) moved by the drag within
+// `lo`..`hi`, back to `first` on a double click. `across`: a line across (dragged up and down), else upright.
+// `always_drawn`: else only while pointed at or dragged. True when let go or reset: the time to save it.
+}  // namespace
+
 void save_now(App& app) {
     std::string why;
     if (!save_settings(app.settings, &why))
         app.tell(fmt(app.language, S::save_failed, {why}), false);
 }
 
-constexpr float kSplitGrip = 8.0f;  // a split line's thickness to grab
-
-// A line the modder drags between two panels, `length` long: `*at` (pixels) moved by the drag within
-// `lo`..`hi`, back to `first` on a double click. `across`: a line across (dragged up and down), else upright.
-// `always_drawn`: else only while pointed at or dragged. True when let go or reset: the time to save it.
 bool split_line(const char* id, bool across, float length, float* at, float lo, float hi, float first,
                 bool always_drawn) {
     const ImVec2 size =
@@ -105,6 +107,8 @@ bool split_line(const char* id, bool across, float length, float* at, float lo, 
     }
     return ImGui::IsItemDeactivated() || reset;
 }
+
+namespace {
 
 // The mission kept open beside the shown room (See room), or null: let go once something else than a room
 // is selected.
@@ -164,12 +168,24 @@ void draw_frame(App& app, bool* settings_open, bool* themes_open, bool* console_
     // the themes and the settings at the right end of the same row
     const ImGuiStyle& style = ImGui::GetStyle();
     const float buttons =
-        ImGui::CalcTextSize(tr(app.language, S::console)).x + ImGui::CalcTextSize(tr(app.language, S::themes)).x +
-        ImGui::CalcTextSize(tr(app.language, S::settings)).x + style.FramePadding.x * 6 + style.ItemSpacing.x * 2;
+        ImGui::CalcTextSize(tr(app.language, S::ws_tab)).x + ImGui::CalcTextSize(tr(app.language, S::console)).x +
+        ImGui::CalcTextSize(tr(app.language, S::themes)).x + ImGui::CalcTextSize(tr(app.language, S::settings)).x +
+        style.FramePadding.x * 8 + style.ItemSpacing.x * 3;
     ImGui::SameLine();
     const float room = ImGui::GetContentRegionAvail().x;
     if (room > buttons)
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + room - buttons);
+    // the Map workshop: shown pressed while it is the tab shown
+    if (app.workshop) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
+    }
+    const bool workshop = ImGui::Button(tr(app.language, S::ws_tab));
+    if (app.workshop)
+        ImGui::PopStyleColor(2);
+    if (workshop)
+        app.workshop = !app.workshop;
+    ImGui::SameLine();
     if (ImGui::Button(tr(app.language, S::console)))
         *console_open = true;
     ImGui::SameLine();
@@ -182,6 +198,19 @@ void draw_frame(App& app, bool* settings_open, bool* themes_open, bool* console_
 
     const float status_h = ImGui::GetFrameHeightWithSpacing();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
+    if (app.workshop) {
+        draw_workshop(app, avail.y - status_h);
+        ImGui::TextUnformatted(app.status.c_str());
+        ImGui::End();
+        draw_notices(app);
+        if (*settings_open)
+            draw_settings(app, settings_open);
+        if (*themes_open)
+            draw_themes(app, themes_open);
+        if (*console_open)
+            draw_mods_console(app, console_open);
+        return;
+    }
     // the catalog takes a share of the width the modder drags at the line between the panels, each panel at
     // least 200 wide
     const float narrowest = std::min(200.0f, 0.5f * (avail.x - kSplitGrip));
