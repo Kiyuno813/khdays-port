@@ -1,6 +1,7 @@
 // The catalog on the left: search, kinds, the items.
 #include "../app.h"
 
+#include "core/characters/character_files.h"
 #include "core/files/catalog_tree.h"
 #include "core/files/paths.h"
 
@@ -100,22 +101,37 @@ void select_item(App& app, int index) {
     }
 }
 
+// What a folder holds, where its name says it: a world's archive (mi/wd/wd_tt, its parts wd_tt#3) or a character's
+// folder (ba/ch/ro); empty for any other.
+std::string folder_meaning(App& app, const TreeNode& node) {
+    const std::string& name = node.name;
+    if (name.rfind("wd_", 0) == 0 && name.size() >= 5 && (name.size() == 5 || name[5] == '#' || name[5] == '.')) {
+        const std::string code = name.substr(3, 2);
+        const std::string world = world_name(app.language, code);
+        if (world != code)
+            return world;
+    }
+    if (node.parent > 0 && tv.tree.nodes[static_cast<std::size_t>(node.parent)].name == "ch") {
+        for (const auto& base : character_bases())
+            if (character_base_code(base) == name)
+                return character_display_name(base);
+        if (name == "r2")  // the folders' 20th (data_02042a70), ov049's: not a base a new character plays as
+            return tr(app.language, S::folder_dual_roxas);
+    }
+    return {};
+}
+
 void draw_tree_node(App& app, int n) {
     const TreeNode& node = tv.tree.nodes[static_cast<std::size_t>(n)];
     if (tv.open_found)
         ImGui::SetNextItemOpen(true, ImGuiCond_Always);
     if (!tv.reveal.empty() && tv.reveal[static_cast<std::size_t>(n)])
         ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-    std::string name =
-        node.kind >= 0 ? std::string(tr(app.language, kind_word(static_cast<Kind>(node.kind)))) : node.name;
-    // mi/wd and its worlds: their names beside their folders' ("wd_tt - Twilight Town")
-    if (node.kind < 0 && node.parent > 0) {
-        const std::string& up = tv.tree.nodes[static_cast<std::size_t>(node.parent)].name;
-        if ((node.name == "wd" && up == "mi") || (node.name.rfind("wd_", 0) == 0 && up == "wd")) {
-            if (const std::string words = world_folder_label(app, node.name); !words.empty())
-                name += " - " + words;
-        }
-    }
+    // a folder's meaning beside it: a world's name (wd_tt), a character's (ba/ch/ro)
+    const std::string meaning = node.kind >= 0 ? std::string() : folder_meaning(app, node);
+    const std::string name = node.kind >= 0    ? std::string(tr(app.language, kind_word(static_cast<Kind>(node.kind))))
+                             : meaning.empty() ? node.name
+                                               : node.name + "  -  " + meaning;
     const std::string label = name + "  (" + std::to_string(node.count) + ")###n" + std::to_string(n);
     ImGuiTreeNodeFlags flags =
         ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanAvailWidth;
@@ -327,7 +343,7 @@ void draw_dump_panel(App& app) {
         ImGui::TextWrapped("%s", fmt(app.language, missing, {setting}).c_str());
         if (app.job)
             return;
-        const fs::path exe = resolve(app.settings, app.settings.port);
+        const fs::path exe = port_exe(app.settings);
         std::error_code ec;
         if (app.settings.port.empty() || !fs::is_regular_file(exe, ec)) {
             ImGui::TextWrapped("%s", tr(app.language, S::no_port));

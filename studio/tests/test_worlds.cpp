@@ -475,7 +475,7 @@ TEST(a_room_change_reads_back_as_written) {
     studio_test::write(file, change_text(r) + "teleport 1 2 3\n");
     CHECK(!read_change(file, &back, &why) && why.find("line") != std::string::npos);
 
-    // no model: the game's room kept, only its markers and exits' models moved
+    // no model: the game's room kept, only its markers and gate markers moved
     RoomReplacement only;
     only.world = "tt";
     only.room = 3;
@@ -743,7 +743,7 @@ TEST(a_room_that_cannot_be_given_back_stays_as_it_was) {
     CHECK(!fs::exists(rooms, ec) && outputs_of(mod).empty());
 }
 
-TEST(a_rooms_markers_and_exits_move_with_nothing_else_changed) {
+TEST(a_rooms_markers_and_gate_markers_move_with_nothing_else_changed) {
     namespace fs = std::filesystem;
     const auto dir = studio_test::scratch("room_markers_only");
     const Bytes original = write_collision(room());

@@ -6,6 +6,7 @@
 #define KHDAYS_TEXTURES_H
 
 #include "../../gfx/g3d.h"
+#include "../../gpu/vram_map.h"
 
 #include <stdint.h>
 
@@ -40,6 +41,11 @@ typedef struct KhdaysTextureReplacement {
  * of `units` 32-byte units (bits 8-15) and `rows` rows (bits 16-31). The
  * units drawn instead are numbered from the bitmap's start (tiles2d.h). */
 #define KHDAYS_REPLACEMENT_BITMAP 0x4u
+#define KHDAYS_REPLACEMENT_NO_MIPS 0x10u /* atlas regions are sampled explicitly at their logical size */
+/* A 3D texture (a mod's for the game's, a mod's model's or room's, a texture bank's): drawn only by the 3D's
+ * polygons, so the graphics card holds it while the polygons drawn use it and may let it go past the most
+ * its memory holds (host/render/gpu_hd.c). Every other picture stays on the card once there. */
+#define KHDAYS_REPLACEMENT_ON_DEMAND 0x20u
 
 /* A texture from a file's data, as the port draws it, into `rgba` (width x
  * height x 4 bytes, the sizes of `param`): `param` its TEXIMAGE_PARAM (the
@@ -48,6 +54,14 @@ typedef struct KhdaysTextureReplacement {
  * For the dump without a game (--dump-graphics). */
 void khdays_textures_decode(uint32_t param, const uint8_t *texels, uint32_t texel_bytes, const uint8_t *index4x4,
                             uint32_t index_bytes, const uint8_t *palette, uint32_t palette_bytes, uint8_t *rgba);
+
+/* The texture TEXIMAGE_PARAM `param` and PLTT_BASE `pltt` place in `pages`, as the port draws it: its
+ * texels as 8-bit RGBA words (red low, rows top to bottom; the caller frees them), NULL without memory. */
+uint32_t *khdays_textures_decode_pages(const KhdaysVramPages *pages, uint32_t param, uint32_t pltt);
+
+/* A mod's texture for `name` (mods/<Mod>/graphics/<name>.png, read once), drawn instead of one with
+ * TEXIMAGE_PARAM `param`; -1 if there is none. */
+int khdays_textures_mod_replacement(const char *name, uint32_t param);
 
 /* `rgba` (width x height) as a PNG at `path`, its directories made; says why
  * not. */
@@ -62,8 +76,9 @@ const char *khdays_textures_dump_dir(void);
 int khdays_textures_hd(void);
 
 /* `rgba` (8-bit RGBA, red first, rows top to bottom; kept, never freed) as
- * a texture drawn instead under `name` -- a mod's model's own (models.h):
- * its id, the one already added under that name, or -1 when there is no room. */
+ * a texture drawn instead under `name` -- a mod's model's own (models.h), a 3D
+ * texture (KHDAYS_REPLACEMENT_ON_DEMAND): its id, the one already added under
+ * that name, or -1 when there is no room. */
 int khdays_textures_add(const char *name, int width, int height, const uint8_t *rgba);
 
 /* The same for texels of any kind, with what they are (`info`). */
@@ -79,6 +94,8 @@ int khdays_textures_write_indexed_png(const char *path, const uint8_t *indices, 
  * counted here never changes, but for a changing one's texels. */
 int khdays_textures_replacements(void);
 const KhdaysTextureReplacement *khdays_textures_replacement(int id);
+/* The name replacement `id` was found under (the texture's: names.h), or NULL. */
+const char *khdays_textures_name(int id);
 
 /* A replacement whose texels the runtime changes as the game runs (a movie's frame: video.c), zero at
  * first: written between khdays_textures_change_begin and _end, which moves its version; read on

@@ -167,11 +167,11 @@ void remove_written(const std::filesystem::path& mod_dir, const std::string& rel
     }
 }
 
-// Writes `model` (placed) as the glTF replacing `key`'s model, its textures beside it.
-bool write_room_model(const std::filesystem::path& mod_dir, const std::string& key, const assets::ImportedModel& model,
-                      std::set<std::string>* written, std::string* why) {
-    const std::filesystem::path gltf = mod_dir / "graphics" / path_u8(key + ".gltf");
-    const std::string name = key.substr(key.rfind('/') + 1);
+}  // namespace
+
+bool write_model_as(const std::filesystem::path& mod_dir, const std::filesystem::path& gltf, const std::string& name,
+                    const std::string& listed, const assets::ImportedModel& model, std::set<std::string>* written,
+                    std::string* why) {
     std::map<std::string, assets::GltfTextureRef> refs;
     std::size_t n = 0;
     for (const auto& [texture, decoded] : model.textures) {
@@ -188,7 +188,7 @@ bool write_room_model(const std::filesystem::path& mod_dir, const std::string& k
             [](const std::filesystem::path&) { return std::string(); });
         if (!result.ok)
             return fail_with(why, file + ": " + result.why);
-        written->insert("graphics/" + key.substr(0, key.rfind('/') + 1) + file);
+        written->insert(listed + file);
         refs[texture] = {file, decoded.width, decoded.height,
                          assets::texels_translucent(decoded.rgba.data(), decoded.rgba.size() / 4)};
     }
@@ -213,9 +213,18 @@ bool write_room_model(const std::filesystem::path& mod_dir, const std::string& k
             return {};
         });
     if (!result.ok)
-        return fail_with(why, key + ".gltf: " + result.why);
-    written->insert("graphics/" + key + ".gltf");
+        return fail_with(why, name + ".gltf: " + result.why);
+    written->insert(listed + name + ".gltf");
     return true;
+}
+
+namespace {
+
+// Writes `model` (placed) as the glTF replacing `key`'s model, its textures beside it.
+bool write_room_model(const std::filesystem::path& mod_dir, const std::string& key, const assets::ImportedModel& model,
+                      std::set<std::string>* written, std::string* why) {
+    return write_model_as(mod_dir, mod_dir / "graphics" / path_u8(key + ".gltf"), key.substr(key.rfind('/') + 1),
+                          "graphics/" + key.substr(0, key.rfind('/') + 1), model, written, why);
 }
 
 // A model's joints at rest: each palette entry its joint's global times its inverse bind.
@@ -271,6 +280,8 @@ std::string change_text(const RoomReplacement& r) {
         o << "model " << r.model << "\n";
     if (!r.kh2.empty())
         o << "kh2 " << r.kh2 << "\n";
+    if (!r.source.empty())
+        o << "source " << r.source << "\n";
     if (!r.collision.empty())
         o << "collision " << r.collision << "\n";
     if (r.keep_collision)
@@ -329,6 +340,8 @@ bool read_change(const std::filesystem::path& file, RoomReplacement* out, std::s
             r.model = rest;
         else if (word == "kh2")
             r.kh2 = rest;
+        else if (word == "source")
+            r.source = rest;
         else if (word == "collision")
             r.collision = rest;
         else if (word == "collision-kept")
@@ -390,7 +403,7 @@ bool read_change(const std::filesystem::path& file, RoomReplacement* out, std::s
     }
     if (r.world.empty() || r.room < 0)
         return fail_with(why, u8(file) + ": no world or room");
-    // no model: the game's room kept, only its markers and exits' models moved -- its floor and walls too
+    // no model: the game's room kept, only its markers and gate markers moved -- its floor and walls too
     if (r.model.empty() && (!r.keep_collision || !r.collision.empty() || !r.kh2.empty()))
         return fail_with(why, u8(file) + ": no model, yet the room's floor and walls are not the game's");
     if (!(r.place.scale > 0))
@@ -531,19 +544,152 @@ RoomAlignment align_with_room(const std::vector<std::array<float, 3>>& room_poin
     return best;
 }
 
-RoomAlignment kh2_alignment(const std::vector<std::array<float, 3>>& room_points, const RoomCollision& room,
-                            const assets::ImportedModel& kh2) {
+namespace {
+
+// A KH2 room's middle from above and its floor's height under it, from its still meshes but its skies
+// (its pieces may stand far off, waiting); false when it has none.
+bool kh2_floor_middle(const assets::ImportedModel& kh2, float* x, float* z, float* floor_y) {
+    std::array<float, 3> lo{1e30f, 1e30f, 1e30f}, hi{-1e30f, -1e30f, -1e30f};
+    struct Tri {
+        std::array<float, 3> a, b, c;
+    };
+    std::vector<Tri> ups;
+    for (const auto& mesh : kh2.model.meshes) {
+        if (mesh.sky)
+            continue;
+        auto still = [](const assets::NeutralVertex& v) { return v.joints[0] == 0 && v.weights[0] >= 0.999f; };
+        for (const auto& v : mesh.vertices) {
+            if (!still(v))
+                continue;
+            for (std::size_t c = 0; c < 3; ++c)
+                lo[c] = std::min(lo[c], v.position[c]), hi[c] = std::max(hi[c], v.position[c]);
+        }
+        for (std::size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+            const auto& p = mesh.vertices[mesh.indices[i]];
+            const auto& q = mesh.vertices[mesh.indices[i + 1]];
+            const auto& r = mesh.vertices[mesh.indices[i + 2]];
+            if (!still(p) || !still(q) || !still(r))
+                continue;
+            const float e0[3] = {q.position[0] - p.position[0], q.position[1] - p.position[1],
+                                 q.position[2] - p.position[2]};
+            const float e1[3] = {r.position[0] - p.position[0], r.position[1] - p.position[1],
+                                 r.position[2] - p.position[2]};
+            const float n[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
+                                e0[0] * e1[1] - e0[1] * e1[0]};
+            const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            if (len > 0 && n[1] / len > 0.9f)
+                ups.push_back({p.position, q.position, r.position});
+        }
+    }
+    if (lo[0] > hi[0])
+        return false;
+    const float kx = (lo[0] + hi[0]) / 2, kz = (lo[2] + hi[2]) / 2;
+    // the lowest upward triangle holding the middle, else the nearest one's middle
+    float y = lo[1];
+    bool held = false;
+    float nearest = 1e30f;
+    for (const auto& t : ups) {
+        auto side = [&](const std::array<float, 3>& u, const std::array<float, 3>& w) {
+            return (w[0] - u[0]) * (kz - u[2]) - (w[2] - u[2]) * (kx - u[0]);
+        };
+        const float s0 = side(t.a, t.b), s1 = side(t.b, t.c), s2 = side(t.c, t.a);
+        const bool inside = (s0 >= 0 && s1 >= 0 && s2 >= 0) || (s0 <= 0 && s1 <= 0 && s2 <= 0);
+        const float cy = (t.a[1] + t.b[1] + t.c[1]) / 3;
+        if (inside) {
+            if (!held || cy < y)
+                y = cy;
+            held = true;
+        } else if (!held) {
+            const float dx = (t.a[0] + t.b[0] + t.c[0]) / 3 - kx, dz = (t.a[2] + t.b[2] + t.c[2]) / 3 - kz;
+            if (dx * dx + dz * dz < nearest) {
+                nearest = dx * dx + dz * dz;
+                y = cy;
+            }
+        }
+    }
+    *x = kx;
+    *z = kz;
+    *floor_y = y;
+    return true;
+}
+
+// A game room's middle from above and its ground's height under it (the collision's 20.12 units): the
+// ground holding the middle, else the nearest ground's middle; false when the room has no faces.
+bool room_ground_middle(const RoomCollision& room, double* x, double* z, double* ground) {
+    double lo[3] = {1e30, 1e30, 1e30}, hi[3] = {-1e30, -1e30, -1e30};
+    for (const auto& list : room.faces) {
+        for (const auto& f : list) {
+            for (std::size_t v = 0; v < f.corners && v < 4; ++v) {
+                for (std::size_t c = 0; c < 3; ++c)
+                    lo[c] = std::min(lo[c], static_cast<double>(f.v[v][c])),
+                    hi[c] = std::max(hi[c], static_cast<double>(f.v[v][c]));
+            }
+        }
+    }
+    if (lo[0] > hi[0])
+        return false;
+    const double dx = (lo[0] + hi[0]) / 2, dz = (lo[2] + hi[2]) / 2;
+    double y = lo[1];
+    if (!ground_under(room, dx, dz, hi[1] + 4096.0, &y)) {
+        double best = 1e300;
+        for (const auto& g : room.faces[kGround]) {
+            double cx = 0, cy = 0, cz = 0;
+            for (std::size_t v = 0; v < g.corners && v < 4; ++v)
+                cx += g.v[v][0], cy += g.v[v][1], cz += g.v[v][2];
+            const double k = g.corners > 0 ? 1.0 / g.corners : 0;
+            const double d = (cx * k - dx) * (cx * k - dx) + (cz * k - dz) * (cz * k - dz);
+            if (d < best) {
+                best = d;
+                y = cy * k;
+            }
+        }
+    }
+    *x = dx;
+    *z = dz;
+    *ground = y;
+    return true;
+}
+
+}  // namespace
+
+namespace {
+
+// By its points when it shares them, else at `units`: kept at its own axes (`kh2_axes`), or moved so that its floor's
+// middle meets the room's ground's.
+RoomAlignment by_units(const std::vector<std::array<float, 3>>& room_points, const RoomCollision& room,
+                       const assets::ImportedModel& kh2, float units, bool kh2_axes) {
     RoomAlignment a = align_with_room(room_points, kh2);
     if (a.verdict != RoomAlignment::unrelated)
         return a;
     a = RoomAlignment{};
     a.verdict = RoomAlignment::kh2_units;
-    a.place.scale = 0.01f;  // KH2's units are a hundredth of the game's (the Usual Spot, room 0 of Twilight Town)
-    // left where KH2 has it, not moved: Days kept KH2's units and axes, so a room made from a map is that map
-    // at 0 0 0 (Station Plaza's rooms on their KH2 map exactly). Matching the two middles and floors moved it by
-    // what the map holds past the room (its far streets, the hills), numbers that meant nothing.
-    (void)room;
+    a.place.scale = units;  // KH2's units are a hundredth of the game's (the Usual Spot, room 0 of Twilight Town)
+    if (kh2_axes) {
+        // a KH2 map left where KH2 has it, not moved: Days kept KH2's units and axes, so a room made from a map is
+        // that map at 0 0 0 (Station Plaza's rooms on their KH2 map exactly). Matching the two middles and floors
+        // moved it by what the map holds past the room (its far streets, the hills), numbers that meant nothing.
+        return a;
+    }
+    float kx = 0, kz = 0, floor_y = 0;
+    double dx = 0, dz = 0, ground = 0;
+    if (!kh2_floor_middle(kh2, &kx, &kz, &floor_y) || !room_ground_middle(room, &dx, &dz, &ground))
+        return a;
+    const float s = a.place.scale;
+    a.place.move = {static_cast<float>(dx / 4096.0) - s * kx, static_cast<float>(ground / 4096.0) - s * floor_y,
+                    static_cast<float>(dz / 4096.0) - s * kz};
     return a;
+}
+
+}  // namespace
+
+RoomAlignment kh2_alignment(const std::vector<std::array<float, 3>>& room_points, const RoomCollision& room,
+                            const assets::ImportedModel& kh2) {
+    return by_units(room_points, room, kh2, 0.01f, true);
+}
+
+RoomAlignment kh2_alignment(const std::vector<std::array<float, 3>>& room_points, const RoomCollision& room,
+                            const assets::ImportedModel& model, float units) {
+    return by_units(room_points, room, model, units, false);
 }
 
 std::array<float, 3> placed_point(const RoomPlacement& place, const std::array<float, 3>& v) {
@@ -916,6 +1062,81 @@ std::vector<SurfaceMap::Height> SurfaceMap::heights_at(float x, float z) const {
         out.push_back({static_cast<float>(a * t[0][1] + b * t[1][1] + c * t[2][1]), up[i] != 0});
     }
     return out;
+}
+
+std::pair<std::size_t, std::size_t> onto_floors(const assets::ImportedModel& floors, const RoomCollision& room,
+                                                RoomAlignment* a) {
+    std::vector<std::array<float, 3>> places{{0, 0, 0}};
+    for (const auto& m : markers(room))
+        places.push_back({m.place[0] / 4096.0f, m.place[1] / 4096.0f, m.place[2] / 4096.0f});
+    assets::ImportedModel placed = floors;
+    place_model(&placed, a->place);
+    // its lowest main floor (the lowest height, by halves of a unit, holding a quarter of the floors' area the most
+    // held one does) at the room's ground: the floor under its middle may be a roof, and from a higher one the player
+    // could fall past where the game takes a fall for a fall out of the room
+    double x = 0, z = 0, ground = 0;
+    if (room_ground_middle(room, &x, &z, &ground)) {
+        std::map<long long, double> area_at;
+        for (const auto& t : drawn_triangles(placed)) {
+            const float e0[3] = {t[1][0] - t[0][0], t[1][1] - t[0][1], t[1][2] - t[0][2]};
+            const float e1[3] = {t[2][0] - t[0][0], t[2][1] - t[0][1], t[2][2] - t[0][2]};
+            const float n[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
+                                e0[0] * e1[1] - e0[1] * e1[0]};
+            const float length = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            if (!(length > 0) || n[1] / length <= 0.7f)
+                continue;  // (n[1]: twice its area seen from above)
+            area_at[std::llround((t[0][1] + t[1][1] + t[2][1]) / 3 * 2)] += n[1] / 2;
+        }
+        const auto most = std::max_element(area_at.begin(), area_at.end(),
+                                           [](const auto& p, const auto& q) { return p.second < q.second; });
+        auto main = area_at.begin();
+        while (main != most && main->second < most->second / 4)
+            ++main;
+        if (main != area_at.end()) {
+            const float raise = static_cast<float>(ground / 4096.0 - main->first / 2.0);
+            a->place.move[1] += raise;
+            for (auto& mesh : placed.model.meshes)
+                for (auto& v : mesh.vertices)
+                    v.position[1] += raise;
+        }
+    }
+    const SurfaceMap surfaces = surface_map(placed);
+    // a place stands on a floor at most a stair's rise above its feet (the game puts the player there and lets them
+    // fall: a floor higher up is passed under) and two units below
+    const float above = 0.25f, below = 2.0f;
+    auto on = [&](float dx, float dz) {
+        std::size_t count = 0;
+        for (const auto& q : places) {
+            bool stands = false;
+            for (const auto& h : surfaces.heights_at(q[0] - dx, q[2] - dz))
+                stands = stands || (h.up && h.y <= q[1] + above && h.y >= q[1] - below);
+            count += stands ? 1 : 0;
+        }
+        return count;
+    };
+    std::size_t most = on(0, 0);
+    float best_x = 0, best_z = 0;
+    for (std::size_t t = 0; t < surfaces.triangles.size() && most < places.size(); ++t) {
+        if (!surfaces.up[t])
+            continue;
+        const auto& tri = surfaces.triangles[t];
+        const float mx = (tri[0][0] + tri[1][0] + tri[2][0]) / 3, mz = (tri[0][2] + tri[1][2] + tri[2][2]) / 3;
+        const float my = (tri[0][1] + tri[1][1] + tri[2][1]) / 3;
+        for (const auto& q : places) {
+            if (my > q[1] + above || my < q[1] - below)
+                continue;
+            const float dx = q[0] - mx, dz = q[2] - mz;
+            const std::size_t count = on(dx, dz);
+            if (count > most || (count == most && dx * dx + dz * dz < best_x * best_x + best_z * best_z)) {
+                most = count;
+                best_x = dx;
+                best_z = dz;
+            }
+        }
+    }
+    a->place.move[0] += best_x;
+    a->place.move[2] += best_z;
+    return {most, places.size()};
 }
 
 float raise_to_markers(const SurfaceMap& surfaces, const std::vector<std::array<float, 3>>& markers, std::size_t* on) {

@@ -45,6 +45,12 @@ int khdays_settings_handle(const SDL_Event *event, SDL_Window *window);
  * when waiting for a key or button). */
 void khdays_settings_tick(void);
 
+/* The menu's own sounds, the game's system effects (SE_SYS): the cursor moving, a choice made, the menu
+ * opening, going back. The menu asks for them through `cue` (settings_sample.cpp registers it: with the Menu
+ * Overhaul only; none in the tests), with the volumes being edited. */
+enum { KHDAYS_SETTINGS_CUE_CURSOR, KHDAYS_SETTINGS_CUE_ACCEPT, KHDAYS_SETTINGS_CUE_OPEN, KHDAYS_SETTINGS_CUE_BACK };
+void khdays_settings_set_cue(void (*cue)(int which, const KhdaysSound *levels));
+
 int khdays_settings_changed(void);
 const KhdaysProfile *khdays_settings_profile(void);
 
@@ -79,9 +85,8 @@ void khdays_settings_add_notice(const char *text);
 int khdays_settings_notice_count(void);
 const char *khdays_settings_notice(int n);
 
-/* The FPS display (Video: Show FPS), in the window's top-left corner:
- * `pictures` drawn per second and the game's own `frames` per second. */
-void khdays_settings_fps_draw(SDL_Renderer *renderer, int pictures, int frames);
+/* The FPS display (Video: Show FPS), in the window's top-left corner: `pictures` drawn per second. */
+void khdays_settings_fps_draw(SDL_Renderer *renderer, int pictures);
 
 /* The ping display ([network] show_ping): `line` in the top-left corner,
  * below the FPS display when `under_fps`. */

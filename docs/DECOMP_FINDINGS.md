@@ -19,7 +19,7 @@ overlay). Names are the decomp's own at the revision below. Sections marked
 *generated* are refreshed by `python port/tools/decomp_findings.py`.
 
 <!-- BEGIN generated:revision -->
-Checked against khdays-decomp `a2b0478b8`.
+Checked against khdays-decomp `93535afd7`.
 <!-- END generated:revision -->
 
 ## 1. Open
@@ -161,8 +161,8 @@ the same as the ROM's payload and blit give (RUNTIME_MAP section 9).
 
 ### 1.4 Names that say something else
 
-What this section reported, the decomp took up on 2026-10-08 (its
-`docs/renames/2026-10-08-findings-names.tsv`, checked against each body);
+What this section reported, the decomp took up on 2026-10-08 and 2026-11-05 (its
+`docs/renames/2026-10-08-findings-names.tsv` and `2026-11-05-*.tsv`, checked against each body);
 the port follows its names since. Left open:
 
 - DS Protect's functions in ov028 are listed in
@@ -172,64 +172,59 @@ the port follows its names since. Left open:
   functions, several to a file. A tool that goes by the symbols' kinds finds
   no function there (the port's build hooks the file instead,
   `port/tools/prepare.py` FILE_HOOKS). Found 2026-10-01.
-- ov008's `Ov008_MainMenu_*` (`Ov008_MainMenu_StateTick` and the functions
-  it calls: `_SetupTextSurfaces`, `_UpdateSelectionText`, ...) are the camp's
-  screen 1, the holo-missions' world map: its `+0x13fc` table is
-  `UI/cm/str/world_id_&.s.z` (`Ov008_InitMissionList`), its entries worlds
-  (a locked one written `select_&.s` record 4, "¿ ?"). The camp's menu -- its
-  options, the entry selected at +0x88 -- is screen 0, `Ov008_SetupScene`'s.
-  Found for the port's camp menu, 2026-10-10 (`docs/RUNTIME_MAP.md` 16.4).
 - The game state's +0xc, which `Ov008_CanConfirmShopRow` and
   `Ov008_Shop_DrawRow` declare `nMunny`, holds the heart points: the camp's
   bottom screen shows +8 as PLATINES (157,458 on the maintainer's save) and
   +0xc as PUNTOS CORAZÓN (46,509). Same finding.
-- The tables the decomp calls the "records menu"'s and the "item menu"'s
-  (`data_ov025_020b4f64`, `data_ov008_02090598`: 25 entries of 0x14 bytes)
-  are both camps' Preferences page's settings: their records are
-  `UI/cm/str/cfg_&.s.z`'s (entry 0 Controls, record 4, its values Type A and
-  Type B, 29 and 30; ... entry 24 Limit Breaks, 28), shown by screen 5
-  (`Ov025_Config_Setup`, `Ov008_SetupItemMenu`) and drawn by
-  `Ov025_DrawMenuPageTexts` (a setting not enabled written record 3, "?").
-  `Ov008_ArmUnseenMarkers` arms no markers: it enables settings 15-18
-  (Friendly Fire, Friendly Lock-ons, Rank Crowns, Handicaps) unless flag
-  0x200d is set, and 24 when `gGameState`+0x9b0 is. `Ov025_SelectTierIfActive`
-  and `Ov008_SelectTierIfActive` give a tab's title record (1 Player-Unique
-  Settings for Mission Mode's first two tabs, 2 Universal Settings for the
-  others, 0 for the story's list). Found for the port's Preferences page,
-  2026-10-10 (`docs/RUNTIME_MAP.md` 16.4).
-- An enemy's level goes by "height": `Ov002_GetEffectiveHeight` is the
-  enemy's level -- the mission's level (root + 0x8bae) plus the marker row's
-  signed adjustment (+4), capped at 0x78 (120) and floored at 1 -- and
-  `Ov002_CreateActorFromMarker` hands it to `pSetHeight` (+0x1ec), which is
-  `Ov107_AiState_LoadStats(self, recordIndex)`: the record is the level,
-  kept at +0x19d. `pActivate` (+0x1f0) is `Ov107_LoadMsUpRecord`. In the same
-  object, what `Ov107_Spawner_Run` calls `pair218` (a "timer", refilled to its
-  maximum) is the enemy's HP (`Ov107_AiState_LoadStats` sets +0x218 and +0x21a
-  from the level's record, `Ov107_AiState_ApplyHit` takes +0x21a down to the
-  defeat); `Ov107_StoreHitInfo` (+0x1f4) stores the enemy's home and its reach
-  (the spawner's point and radius, `field_110`), no hit; `Ov107_StoreSlotEvent`
-  (+0x1d8) stores attack i's power at +0x290 + 6 * i. Found
-  2026-10-22 (`docs/RUNTIME_MAP.md` 22: a level 6 Shadow had HP 93
-  and attacks 6 and 18, a level 1 one 75, 3 and 9).
-- `Ov022_BuildSlotPool.c`'s `struct SlotPool` gives the actor's magic pool
-  16 slot places (`apSlots[16]` from +0x18). It has 15, one for each magic
-  `Ov022_BuildSlotPool` walks: `Ov022_InitEntryState` clears 15 words from
-  +0x18 and +0x54 apart, and +0x54 is the cast's level animation (its grid
-  entry, written by `Ov022_BuildEntryLabelText`), which the other files'
-  `struct ReactionCtx` call `nTrack` (`Ov022_ArmSlotAtActor`,
-  `Ov022_EnterBlockReaction`, ...) or `pOwner` (`Ov022_StepReactionState`,
-  `Ov022_LaunchSlotPart`, ...). Found 2026-10-23: a 16th slot written there
-  was overwritten as the level animation loaded (`docs/RUNTIME_MAP.md` 28).
-- The Shadow's `+0x390` (ov114) is its model's height scale, not an alpha or
-  a speed: `Ov114_HandleMessage` passes it as the Y of `Srt_SetScaleXYZ`, and
-  the files that set it (`Ov114_AiFadeInTick`, `Ov114_FadeInSubObject`,
-  `Ov114_AiFadeOutTick`, `Ov114_InitNodeAndRegisterHandlers`: "the alpha";
-  `Ov114_EasePursuitSpeed`: "the speed field") flatten the Shadow into the
-  ground and raise it again. Found 2026-10-23 (`docs/RUNTIME_MAP.md` 22).
-- `MsgDb_LoadRecord15`'s `DbObject` copies the panels' record `+4` as `a4`:
-  it is the panel's picture + 1 in `ui/pnl/3d_&.pak.z` and the shop's 2D sheet
-  (`Ov026_DrawShopRowMarks` reads it as `nIconId`, 1-based). Found 2026-10-23
-  (`docs/RUNTIME_MAP.md` 28).
+- The missions' list (`UI/cm/msl_&.msi.z`, `docs/RUNTIME_MAP.md` 29), found for the port's new missions,
+  2026-10-24: `Ov008_AnyEntryFlagged` decides between the list of rows and the tutorial's alone.
+- The characters (2026-10-28):
+  - `Ov022_RunContactMode0`'s `ScaledFanSlot.nFace` (+0x00) is the hit's damage factor (fx32, given to
+    `Ov022_ComputeStrengthDamage`), not a face; with `Ov022_UnpackChannelGrid`'s `Channel` it is `nA`, whose
+    `nB`/`nC` are the first and last frame, `nD`/`nE` the push out and up, and the mode-0 tail's `nA`-`nC` the
+    hit's place, `nD` its radius, `nE` its spread's cosine (RUNTIME_MAP section 30, "Its attacks").
+  - `Ov022_BuildNodeGraph`'s graphs are a keyblade's combos (graph 0 the ground one, 1 the air one): `nValue`
+    an attack's number in `cm.b`, `pLeft` the next attack, the pools the chain, its finisher and the branches.
+- The field's prizes (2026-10-30; `docs/RUNTIME_MAP.md` section 33):
+  - `Ov002_LoadShopTable` (ov002@02078ef8) loads no shop: it reads `mo/prize.pak.z` (11 BTX0) and keeps each
+    picture's texture words in the field stage's table at +0x60 (8 bytes a picture, the pack's order).
+  - `data_ov002_0207e67c` is 16 prize kinds of 8 bytes: {s8 picture (an index into that table), s8, s8, pad,
+    s16, s16}.
+  - A billboard node (`Billboard_DrawList`'s list) holds at +0x08 the address of its picture's texture words in
+    that table, and +0x18..+0x22 the quad: s16 width, s16 height, the texture corners s0 t0 s1 t1 (bytes), the
+    alpha (0..31) and the polygon id.
+
+- The mission gauge (2026-11-01; `docs/RUNTIME_MAP.md` section 18, "The mission gauge"):
+  - `Ov002_ResolveFourDescriptors` (script command 2.34) sets the mission gauge: its four operands are the
+    gauge's kind, total, goal and flags, handed to `Ov002_SetScriptRequest`, which keeps them at the field root's
+    +0x8c94 -- a "set mission gauge" pair (kind 1 targets defeated, 2 hearts, 4 a counter).
+  - `Ov002_ScriptCmd_SetEventParams` (2.73) and `Ov002_Event_SetParams` track an enemy class for the gauge: the
+    object context's +0xa is the class (`Ov002_OnPartActorRetired` names it `nTrackedRowId` and compares it with
+    the enemy row's byte 0, `bId`, which is the row's enemy class, not a row index), +0xc the defeats counted
+    (`nRetiredCount`), +0xe the second operand.
+  - `Ov002_ScriptOpInvokeSlot0` (2.38) adds to the mission tally: `Ov002_AddMissionTally(0, kind, amount)`, its
+    first operand read and left unused.
+  - `Ov002_SubmitRequestBlockKind1` (2.7) files a "defeated" watch, not a request: its third operand is the check
+    `Ov002_NodeRunCheckPhase` runs (0 one group, 1 every group), its fourth the group (single-player in the low
+    half, multiplayer in the high one). `Ov002_AllocScriptCallback` makes that node; it allocates no callback.
+  - `Ov002_TriggerOnceOnFlag`, called by `Ov002_StepProgressBar` when the gauge's done reaches its goal, raises
+    state 8326, the mission's goal reached.
+  - The spawner slot's `mask` (`Ov107_Spawner_AddSlot`, from 2.32's third operand) is the enemy's status byte
+    +0x179 (`Ov107_SetStatusAndEmit`), not a mask.
+  - `Ov022_SetPlayerScale(seat, value)` posts a defeated enemy's hearts (`Ov107_AiState_OnDefeat` hands it the
+    enemy's +0x19f): tally 2, the hearts in the high half and a bonus by the player's step in the low one; it scales
+    no player. The enemy's `field_19f` and its spawn record's `field_5d` (`Ov107_LoadSpawnRecord`, byte 0x6d of the
+    class's Ms/DP.p2f record) are the hearts it gives.
+  - `Ov002_FitsBudget` (a position check's kind 0, installed by `Ov002_CreateTaskNodePath`) tests whether a
+    player is within the node's radius (+0x20) of its point (+0x2c); there is no budget. Script command 2.8,
+    `Ov002_ScriptSubmitPathTask`, files the check (gate, event, mode, room, the place, kind, radius, height), so
+    "path task" is a position check; its node's `bOwner` (+0x18) is the players' mode (`nMode`: 0 the first, 1 all).
+  - `Ov021_VmCmd0e30` (17.2) makes the Organization emblems' class (`Ov021_CreateEmblemClass`) and
+    `Ov021_MarshalFxAndDispatch2` (17.3) puts one out (`Ov021_EmblemCreate`); `Ov021_ResetChildrenScoreExceptSelf`
+    restarts the other emblems' timers, which decide their points (10 or 8), not a score.
+  - `Ov107_EnemyTableHasEntry(class, column)` and `data_ov107_020cb6a4` (6 bytes a class) say which of the six
+    enemy code columns a class's overlay is built for (overlay 114 + the byte, 0xff none); `Ov107_LoadEnemyOverlay`
+    returns how many columns the overlay takes, `data_ov107_020cbb04` is the next free column.
 
 Taken up (for the record of what the old names were):
 
@@ -266,6 +261,46 @@ Taken up (for the record of what the old names were):
   halfword (`GetLanguage`, `Msg_BuildLangPath`'s `&`, 1..5 the firmware's
   English .. Spanish). It is `Msg_SetLanguage(int language, int unused)` now,
   declared as defined. Found 2026-10-07 (`docs/RUNTIME_MAP.md` 8.1).
+- What the decomp took up on 2026-11-05: the camp's screen 1 is the holo-missions' world map
+  (`Ov008_MainMenu_*`, `Ov025_MainMenu_*` are `*_WorldMap_*`); the Preferences page's tables
+  (`data_ov008_02090598`, `data_ov025_020b4f64` are `gOv008ConfigSettings`, `gOv025ConfigSettings`, with
+  their `...Lists` and `...Pages`), `Ov008_ArmUnseenMarkers` (`Ov008_Config_EnableModeSettings`) and
+  `*_SelectTierIfActive` (`*_Config_GetTabTitleRecord`); Mission Mode's list row test
+  (`*_IsEncounterEligible`, `*_IsMissionModeRowListed`) and its filters (`Ov008_RecordFilter_KindZero`,
+  `_Kind4Id10`: `_StoryRow`, `_TutorialRow`); `data_02046334` and `func_0200afb8` (`fsi_arc_rom`,
+  `FSi_InitRom`); an enemy's level, home and attack power (`Ov002_GetEffectiveHeight`,
+  `Ov107_StoreHitInfo`, `Ov107_StoreSlotEvent`: `Ov002_GetMarkerEnemyLevel`, `Ov107_SetHomeAndReach`,
+  `Ov107_SetAttackPower`), its HP at +0x218 (`hp`), the magic pool's 15 slots; the Shadow's height
+  scale (`Ov114_FadeInSubObject`, `Ov114_EasePursuitSpeed`, `Ov114_AiFadeOutTick`, `Ov114_AiFadeInTick`:
+  `Ov114_SinkIntoGround`, `Ov114_RiseFromGround`, `Ov114_AiSinkTick`, `Ov114_AiRiseTick`); the panels'
+  record +4 (`a4`: `nIconId`); the field's spawners (`Ov002_ScriptCreateSlotObject`,
+  `Ov002_CreateSlotObjectAndStart`, `Ov002_StartSlotAnim`: `Ov002_ScriptCreateSpawner`,
+  `Ov002_CreateSpawner`, `Ov002_StartSpawnerTrigger`, their operands as proposed), the marker row's
+  nibble (`nMaxOut`), `func_ov107_020c0ea0` (`Ov107_Spawner_Tick`), a node's state bits
+  (`Ov107_SetBit0OfField0x40`, `Ov107_SetBit1OfField0x40`: `Ov107_Node_SetShown`, `_SetRunning`) and a
+  chest's room (`nBucket`: `nRoom`); the characters (`NNSG3dRenderObj`'s +0x08..+0x20 named;
+  `*_MenuEntryToSlot`, `*_MenuSlotToEntry`: `*_SelectPlaceToCharacter`, `*_CharacterToSelectPlace`;
+  `data_ov008_0208e9c4`: `gOv008CampCharacterRecords`; `Ov008_Menu_InitSceneObject`'s character;
+  `Ov022_PlayEntityVoice(pActor, nSeqArc, nSeq)` with the actor's `nSeat` and `nCharacter`;
+  `Ov002_GetPanelWord0220`: `Ov002_SetSeatHpGauge`; `Ov022_ScaleRowValues`: `Ov022_ScaleMoveDamage`;
+  `Ov008_RecordInputCoords`, `Ov008_RefreshSaveSlotWidget`, `Ov008_GetEntryStatusByte`:
+  `Ov008_StoreSeatCampRecord`, `Ov008_RefreshSeatCharacter`, `Ov008_GetSeatCharacter`); the mission's
+  level (`Ov002_GetRootField8bae`: `Ov002_GetMissionLevel`), the event skip (`SetWordAt0x588To1`,
+  `Ov023_FlushTextBox`: `ActionScript_RequestSkip`, `Ov023_RequestEventSkip`), an event script's name
+  (`Ov002_FormatResultLine`: `Ov002_FormatEventScriptName`) and the game's heaps (`data_0204c024`,
+  `data_0204c02c`, `data_0204c044`, `data_0204c030`, `func_ov001_0204cf5c`: `gMainHeap`, `gSubHeap`,
+  their handles `gMainHeapHandle`, `gSubHeapHandle`, `Ov001_InitGameHeaps`).
+- Later on 2026-11-05 (`-4.tsv`, `-5.tsv`): the Shadow's sink and rise in its copies (ov244, ov277: `*_AiEnterFadeIn`,
+  `*_AiEnterFadeOut`, `*_FadeInSubObject`, `*_EasePursuitSpeed`, `*_AiFadeInTick`, `*_AiFadeOutTick`: `*_AiEnterSink`,
+  `*_AiEnterSinkAndStay`, `*_SinkIntoGround`, `*_RiseFromGround`, `*_AiRiseTick`, `*_AiSinkTick`) and the Mega and
+  Gigas Shadows' height scale (ov181-184, ov250, ov251: `*_AiRiseTick`, `*_AiRiseSlowTick`, `*_AiSinkTick`); the
+  seat's HP gauge (`Ov002_GetPanelWord0220Alt`, `_Idx`: `Ov002_ShowSeatHpGauge`, `Ov002_GetSeatHpGauge`);
+  `Ov008_SetupItemMenu` (`Ov008_Config_Setup`); `data_0204c23c` (`gMissionNumber`); a mission's badges
+  (`*_BuildRankMask`, `*_BuildRankMask2`: `*_BuildBadgeMask`, `*_BuildBadgeMask2`; `FIELD_MISSION_REWARDS`:
+  `FIELD_MISSION_BADGES`, with `FIELD_MISSION_STATUS`, `_CROWNS`, `_MODE_RANK`); the missions' list record and
+  node (`Ov008MissionListRecord`, `Ov008MissionListEntry`'s `nCategory`, `nShownNumber`; `nKind`, which
+  `Ov008_CalcMissionCompletionPercent` tests, and `Ov002_SpawnStateSpots`' badge bits); the enemy's hooks
+  (`func_ov107_020c6624`: `Ov107_AiState_Init`; `Ov244_RelaySlotEvent`, `Ov277_RelaySlotEvent`: `*_SetAttackPower`).
 
 ### 1.5 What agrees with the ROM only in the DS's frame or names
 
@@ -303,35 +338,19 @@ the DS's main RAM (2026-10-11):
   remakes one of the two over its own region). Measured in the port with the
   game's data: the main heap is 800 KB with never more than 33 KB free; the
   sub heap 2.25 MB.
-- Heap handles and free sizes are kept in `int`: `Heap_SetCurrent(int heap)`,
-  `AllocFromExpHeapWrapper(int handle, int arena)` (main.c), and
-  `FontResource_Destroy` returns `NNS_FndGetAllocatableSizeForExpHeapEx` (a
-  `u32` in NitroSystem) as `int`. Right on the DS, where no heap reaches
-  2 GiB and no address has its top bit set; typed as the handles and sizes
-  they are (`NNSFndHeapHandle`, `u32`), the C would say so.
+- The heaps' handles and sizes are typed as what they are since 2026-11-05 (`GameHeap`,
+  `include/game/heap.h`; `FontResource_Destroy` returns a `u32`).
 - `MIi_CheckDma0SourceAddress` (main 0x02004084) panics for a channel-0
   source at or above 0x08000000 -- the DS's cartridge bus, which DMA channel
   0 cannot read; a fact of the DS's buses, not of the data. The port lets a
   source in its own memory pass (its DMA is a copy).
-- A file handle names a packed archive's header by 24 bits from 0x01ff8000:
-  `0x80000000 | ((header + 0x8000) & 0xfffffc) << 7 | index`, read back as
-  `((handle >> 7) & 0xfffffc) + 0x01ff8000` by `Archive_OpenSubfileByHandle`
-  (0x020250bc) and `Archive_SubfileIsCompressed` (0x02025074). The encoding
-  is written out by hand in some 200 places in 128 files (the engine,
-  `MsgDb_LoadDb`, `Game_ActionLoadArenaResource`, nearly every enemy
-  overlay's construct, `Ov024_MobiClip_OpenPlayer`), several ways (macros
-  such as `CELL_HANDLE` and `OV008_ARCHIVE_MASK`, a `mask` local, the
-  `+ 0x8000` done before). One helper for making a handle, beside the two
-  that read it, would say that it is one format, and where the 16 MB bound of
-  the DS's main RAM window lives.
+- A file handle names a packed archive's header by 24 bits from 0x01ff8000; since 2026-11-05 one
+  helper makes it and two read it (`ARCHIVE_HANDLE`, `ARCHIVE_HANDLE_HEADER`, `ARCHIVE_HANDLE_INDEX`,
+  `include/game/archive.h`), where the 16 MB bound of the DS's main RAM window lives.
 
-- `Ov023_FlushTextBox` sets the event script's skip request (`SetWordAt0x588To1` on the event's
-  state at the scene root + 0x4b88: `Game_RunActionScript` unwinds to the kept target when +0x584 and
-  +0x588 are both set); the pause's Skip is what calls it. `Ov002_FormatResultLine(0, ...)` formats
-  the field's event script's name ("%d" of the field root's +0x8baa, the struct's `wScore`): it is
-  the script number, not a score. Group 3 of the script machine's tables is the movie player's
-  (`Ov024_MobiClip_OpenPlayer`, ov012's opening): the missions' `_m` sections are the movies'
-  subtitle schedules. Found 2026-10-17 (`docs/RUNTIME_MAP.md` 21).
+- Group 3 of the script machine's tables is the movie player's (`Ov024_MobiClip_OpenPlayer`, ov012's
+  opening): the missions' `_m` sections are the movies' subtitle schedules. Found 2026-10-17
+  (`docs/RUNTIME_MAP.md` 21).
 
 ## 2. Known, and kept as they are
 
@@ -421,7 +440,7 @@ stop:
   each update (`ldr r0,[r1,#0x14]; blx r0`, 0x02023b60), so it stays and
   tries again; natively it returned 1 and the port stopped in mission 61 (the
   maintainer). `Ov022_TestShotHit`'s early exit leaves the damage
-  `Ov022_ComputeStrengthDamage` gave, or `Ov022_ScaleRowValues`' 0 (`mov
+  `Ov022_ComputeStrengthDamage` gave, or `Ov022_ScaleMoveDamage`'s 0 (`mov
   r0,#0`, 0x020a2410), read as the hit; the four menu `Clamp...AndNotify`
   (Ov025, Ov008: the same bytes) the first argument. The port returns those
   values (prepare.py `ABI_FIXES`). `Ov022_ResolveGuardBreakState` (every
@@ -447,7 +466,6 @@ reference and to show when a new revision changes them.
 
 <!-- BEGIN generated:repairs -->
 ```
-NNS_FndFreeToExpHeap returns the result of RecycleRegion
 NNSi_FndFreeFromDefaultHeap returns the result of NNS_FndFreeToExpHeap
 OSi_FreeStackAlloc returns the result of OS_FreeToHeap
 Ov107_Actor_DetachFromRegion returns the result of Ov107_RemoveChildFromRegion
@@ -461,5 +479,7 @@ A call or a value the ROM shows is read, from somewhere the rewrite does not
 follow (a load, a struct in registers, a stack argument).
 
 <!-- BEGIN generated:gaps -->
-*None at this revision.*
+```
+NNS_FndFreeToExpHeap's value: no call of RecycleRegion in the C
+```
 <!-- END generated:gaps -->

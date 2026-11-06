@@ -7,13 +7,17 @@
 #include "core/missions/command_names.h"
 #include "core/missions/missions.h"
 #include "core/missions/mission_db.h"
+#include "core/missions/mod_missions.h"
 #include "core/mods/mods.h"
+#include "core/mods/plugin_parameters.h"
 #include "core/files/paths.h"
 #include "core/mods/settings.h"
 #include "core/models/clip_import.h"
 #include "core/models/texture_export.h"
 #include "core/models/model_export.h"
 #include "core/models/model_files.h"
+#include "core/rooms/added_rooms.h"
+#include "core/rooms/collection_source.h"
 #include "core/rooms/kh2_source.h"
 #include "core/rooms/room_change.h"
 #include "core/rooms/room_collision.h"
@@ -412,6 +416,109 @@ void print_kh2_made(const std::string& name, const Kh2Made& made) {
 // --kh2-room <map> <out.gltf> [<folder>]: a KH2 map (tt02) of the player's collection made into a model
 // to replace a room with, its pictures beside it; the folder the collection's archives gave it to
 // (saves/collection/kh2 when not given).
+// --collection-rooms <game> [<world>]: the maps of kh1, kh2, recom or ddd the player's copy holds, by world, each with
+// whether it is taken out (saves/collection/<game>).
+int collection_rooms(const fs::path& root, const std::vector<std::string>& args) {
+    std::string note, why;
+    const Settings settings = load_settings(root, &note);
+    const CollectionGameInfo* game = collection_game(args[1]);
+    if (game == nullptr) {
+        std::fprintf(stderr, "khdays-studio: no game %s (kh1, kh2, recom, ddd)\n", args[1].c_str());
+        return 2;
+    }
+    std::vector<CollectionMap> maps;
+    if (!collection_maps(settings, *game, &maps, &why)) {
+        std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+        return 1;
+    }
+    std::string world;
+    std::size_t shown = 0;
+    for (const auto& m : maps) {
+        if (args.size() > 2 && m.world != args[2])
+            continue;
+        if (m.world != world) {
+            world = m.world;
+            std::size_t in_world = 0;
+            for (const auto& n : maps)
+                in_world += n.world == world ? 1 : 0;
+            std::printf("%s: %zu maps\n", world.c_str(), in_world);
+        }
+        std::printf("  %s:%s  %s, %zu files%s%s\n", game->code, m.name.c_str(), m.package.c_str(), m.paths.size(),
+                    collection_map_taken_out(root, *game, m) ? ", taken out" : "",
+                    collection_map_falling(*game, m) ? ", a stage the player falls through (Dive): no floor" : "");
+        ++shown;
+    }
+    std::printf("%s: %zu maps\n", game->name, shown);
+    return 0;
+}
+
+// --collection-take <game>:<map>: the map's files taken out of the player's copy into saves/collection/<game>.
+int collection_take(const fs::path& root, const std::vector<std::string>& args) {
+    std::string note, why;
+    const Settings settings = load_settings(root, &note);
+    const auto colon = args[1].find(':');
+    const CollectionGameInfo* game = colon == std::string::npos ? nullptr : collection_game(args[1].substr(0, colon));
+    if (game == nullptr) {
+        std::fprintf(stderr, "khdays-studio: not <game>:<map> (kh1, kh2, recom, ddd): %s\n", args[1].c_str());
+        return 2;
+    }
+    const std::string name = args[1].substr(colon + 1);
+    std::vector<CollectionMap> maps;
+    if (!collection_maps(settings, *game, &maps, &why)) {
+        std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+        return 1;
+    }
+    for (const auto& m : maps) {
+        if (m.name != name)
+            continue;
+        if (!take_out_collection_map(settings, *game, m, &why)) {
+            std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+            return 1;
+        }
+        std::printf("%s:%s taken out into %s\n", game->code, name.c_str(), u8(collection_folder(root, *game)).c_str());
+        return 0;
+    }
+    std::fprintf(stderr, "khdays-studio: no map %s in this copy of %s\n", name.c_str(), game->name);
+    return 1;
+}
+
+// --collection-room <game>:<map>: the map taken out of the player's copy and made into a glTF with its pictures
+// (saves/collection/<game>/made/<map>/<map>.gltf).
+int collection_room(const fs::path& root, const std::vector<std::string>& args) {
+    std::string note, why;
+    const Settings settings = load_settings(root, &note);
+    const auto colon = args[1].find(':');
+    const CollectionGameInfo* game = colon == std::string::npos ? nullptr : collection_game(args[1].substr(0, colon));
+    if (game == nullptr) {
+        std::fprintf(stderr, "khdays-studio: not <game>:<map> (kh1, kh2, recom, ddd): %s\n", args[1].c_str());
+        return 2;
+    }
+    const std::string name = args[1].substr(colon + 1);
+    std::vector<CollectionMap> maps;
+    if (!collection_maps(settings, *game, &maps, &why)) {
+        std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+        return 1;
+    }
+    for (const auto& m : maps) {
+        if (m.name != name)
+            continue;
+        CollectionMade made;
+        if (!make_collection_room(settings, *game, m, &made, &why)) {
+            std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+            return 1;
+        }
+        std::printf("%s:%s: %zu triangles, %zu pictures -> %s\n", game->code, name.c_str(), made.triangles,
+                    made.pictures, u8(collection_made_model(root, *game, name)).c_str());
+        if (made.collision)
+            std::printf("  its own collision -> %s\n", u8(collection_made_collision(root, *game, name)).c_str());
+        for (const auto& r : made.report)
+            std::printf("  %s\n", r.c_str());
+        return 0;
+    }
+    std::fprintf(stderr, "khdays-studio: no map %s in this copy of %s\n", name.c_str(), game->name);
+    return 1;
+}
+
 int kh2_room(const fs::path& root, const std::vector<std::string>& args) {
     const fs::path folder = args.size() > 3 ? path_u8(args[3]) : kh2_folder(root);
     Kh2Made made;
@@ -539,6 +646,42 @@ int replace_room(const fs::path& root, const std::vector<std::string>& args) {
     // kh2:<map>: a KH2 map of the player's collection, taken out and made into the model
     std::vector<std::string> given = args;
     std::string kh2;
+    // <game>:<map>: another collection's map (kh1, recom, ddd), taken out and made into the model
+    std::string source;
+    if (args.size() >= 5 && args[4].rfind("kh2:", 0) != 0 && args[4].find(':') != std::string::npos &&
+        collection_game(args[4].substr(0, args[4].find(':'))) != nullptr) {
+        const CollectionGameInfo* game = collection_game(args[4].substr(0, args[4].find(':')));
+        const std::string name = args[4].substr(args[4].find(':') + 1);
+        std::string note;
+        const Settings settings = load_settings(root, &note);
+        std::vector<CollectionMap> maps;
+        if (!collection_maps(settings, *game, &maps, &why))
+            return print_outcome(false, {}, why);
+        const CollectionMap* map = nullptr;
+        for (const auto& m : maps)
+            if (m.name == name)
+                map = &m;
+        if (map == nullptr)
+            return print_outcome(false, {}, "no map " + name + " in this copy of " + game->name);
+        CollectionMade made;
+        if (!make_collection_room(settings, *game, *map, &made, &why))
+            return print_outcome(false, {}, why);
+        std::printf("%s: %zu triangles, %zu pictures\n", args[4].c_str(), made.triangles, made.pictures);
+        if (collection_map_falling(*game, *map))
+            std::printf("%s is a stage the player falls through (Dive): it has no floor to walk on\n",
+                        args[4].c_str());
+        source = args[4];
+        given[4] = u8(collection_made_model(root, *game, name));
+        // own-collision: the map's own game's floors and walls, placed like its model
+        if (args.size() >= 6 && args[5] == "own-collision") {
+            if (made.collision) {
+                given[5] = u8(collection_made_collision(root, *game, name));
+            } else {
+                std::printf("%s has no collision of its own read: made from its model\n", args[4].c_str());
+                given[5].clear();
+            }
+        }
+    }
     if (args.size() >= 5 && args[4].rfind("kh2:", 0) == 0) {
         kh2 = args[4].substr(4);
         std::string note;
@@ -549,8 +692,8 @@ int replace_room(const fs::path& root, const std::vector<std::string>& args) {
             return print_outcome(false, {}, why);
         print_kh2_made(kh2, made);
         given[4] = u8(model);
-        // kh2-collision: the map's own floors and walls, placed like its model
-        if (args.size() >= 6 && args[5] == "kh2-collision") {
+        // kh2-collision (own-collision): the map's own floors and walls, placed like its model
+        if (args.size() >= 6 && (args[5] == "kh2-collision" || args[5] == "own-collision")) {
             fs::path collision;
             if (!make_kh2_collision(root, kh2, &collision, &why))
                 return print_outcome(false, {}, why);
@@ -573,9 +716,24 @@ int replace_room(const fs::path& root, const std::vector<std::string>& args) {
         if (load_world(nitrofs, code, &w, &why) && import_model(path_u8(given[4]), &model, &why)) {
             RoomCollision collision;
             const bool has_collision = room_collision_of(w, room, &collision);
-            const RoomAlignment a = !kh2.empty() && has_collision
-                                        ? kh2_alignment(room_points(nitrofs, dump, w, room), collision, model)
-                                        : align_with_room(room_points(nitrofs, dump, w, room), model);
+            // (another game's room comes in as KH2's do: their units and floors are alike); with its own game's
+            // collision, the floors it walks on are found there (the model's far scenery would pull its middle away)
+            khdays::assets::ImportedModel floors;
+            const bool own = args.size() >= 6 && (args[5] == "kh2-collision" || args[5] == "own-collision");
+            std::string no_floors;
+            const bool own_floors = own && import_model(path_u8(given[5]), &floors, &no_floors);
+            const CollectionGameInfo* source_game =
+                source.empty() ? nullptr : collection_game(source.substr(0, source.find(':')));
+            const float units = source_game != nullptr ? source_game->units : 0.01f;
+            RoomAlignment a = (!kh2.empty() || !source.empty()) && has_collision && units > 0
+                                  ? (source_game == nullptr  // a KH2 map: at KH2's axes
+                                         ? kh2_alignment(room_points(nitrofs, dump, w, room), collision, model)
+                                         : kh2_alignment(room_points(nitrofs, dump, w, room), collision,
+                                                         own_floors ? floors : model, units))
+                                  : align_with_room(room_points(nitrofs, dump, w, room), model);
+            std::pair<std::size_t, std::size_t> on_floors{0, 0};
+            if (!source.empty() && a.verdict == RoomAlignment::kh2_units)
+                on_floors = onto_floors(own_floors ? floors : model, collision, &a);
             // the KH2 map this room was made from, where Days put it
             std::vector<std::string> notes;
             const auto pairs = kh2_pairs(mod_dir, &notes);
@@ -586,6 +744,12 @@ int replace_room(const fs::path& root, const std::vector<std::string>& args) {
                 r.place.move = pair->move;
                 std::printf("placed where Days put %s: turned %g, moved %.2f %.2f %.2f\n", kh2.c_str(), pair->turn_y,
                             pair->move[0], pair->move[1], pair->move[2]);
+            } else if (a.verdict == RoomAlignment::kh2_units && on_floors.second > 0) {
+                r.place = a.place;
+                std::printf("placed by its game's units (scale %g), its floor at the room's, moved across until %zu of "
+                            "the room's %zu places (its markers, its origin) stand on its floors: move %.2f %.2f %.2f\n",
+                            a.place.scale, on_floors.first, on_floors.second, a.place.move[0], a.place.move[1],
+                            a.place.move[2]);
             } else if (a.verdict == RoomAlignment::kh2_units) {
                 r.place = a.place;
                 std::printf("placed by KH2's units (scale %g), where KH2 has it (not moved)\n", a.place.scale);
@@ -608,6 +772,8 @@ int replace_room(const fs::path& root, const std::vector<std::string>& args) {
         r.keep_collision = true;
     if (!kh2.empty())
         r.kh2 = kh2;
+    if (!source.empty())
+        r.source = source;
     WorldOutcome o;
     const bool ok = args.size() >= 5 ? save_change(nitrofs, dump, mod_dir, r, path_u8(given[4]),
                                                    args.size() >= 6 && !keep ? path_u8(given[5]) : fs::path(), &o, &why)
@@ -616,6 +782,92 @@ int replace_room(const fs::path& root, const std::vector<std::string>& args) {
 }
 
 // --revert-room <Mod> <code> <room>: the room's change and what it wrote removed.
+// --add-room <Mod> <world> <key> <model> | <game>:<map> [<collision model> | own-collision]: a room of the mod's
+// own added to a world (no Days room replaced): another game's map placed in its units on room 0's ground, the
+// room's markers on its floors, or the modder's model as it is; its collision built from its own floors and walls,
+// a simpler model, or its visible triangles.
+int add_room_command(const fs::path& root, const std::vector<std::string>& args) {
+    fs::path nitrofs, dump, mod_dir;
+    if (!room_command_paths(root, args[1], &nitrofs, &dump, &mod_dir))
+        return 1;
+    const std::string world = args[2], key = args[3];
+    std::string why;
+    const fs::path model = path_u8(args[4]);
+    fs::path collision;
+    const auto colon = args[4].find(':');
+    const CollectionGameInfo* game = colon == std::string::npos || colon < 2 ? nullptr
+                                                                           : collection_game(args[4].substr(0, colon));
+    if (args.size() >= 6 && args[5] != "own-collision")
+        collision = path_u8(args[5]);
+    if (game != nullptr) {
+        const std::string name = args[4].substr(colon + 1);
+        std::string note;
+        const Settings settings = load_settings(root, &note);
+        std::vector<CollectionMap> maps;
+        if (!collection_maps(settings, *game, &maps, &why))
+            return print_outcome(false, {}, why);
+        const CollectionMap* map = nullptr;
+        for (const auto& m : maps)
+            map = m.name == name ? &m : map;
+        if (map == nullptr)
+            return print_outcome(false, {}, "no map " + name + " in this copy of " + game->name);
+        std::vector<std::string> lines;
+        const bool ok =
+            add_collection_room(settings, nitrofs, mod_dir, world, key, *game, *map, collision, &lines, &why);
+        for (const auto& line : lines)
+            std::printf("%s\n", line.c_str());
+        if (!ok)
+            std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+        return ok ? 0 : 1;
+    }
+    // the modder's own model, in the game's units: its lowest main floor at 0, a floor under the origin
+    std::vector<std::string> lines;
+    const bool ok = add_model_room(nitrofs, mod_dir, world, key, model, collision, &lines, &why);
+    for (const auto& line : lines)
+        std::printf("%s\n", line.c_str());
+    if (!ok)
+        std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+    return ok ? 0 : 1;
+}
+
+// --add-world <Mod> <key> <code> [<language>=<name> | <name>]...: a world of the mod's own, played in game world
+// <code>, listed in Mission Mode under its name (one for every language, or each language's).
+int add_world_command(const fs::path& root, const std::vector<std::string>& args) {
+    fs::path nitrofs, dump, mod_dir;
+    if (!room_command_paths(root, args[1], &nitrofs, &dump, &mod_dir))
+        return 1;
+    AddedWorld world{args[2], args[3], {}};
+    for (std::size_t i = 4; i < args.size(); ++i) {
+        const auto equals = args[i].find('=');
+        if (equals == 2)
+            world.names[args[i].substr(0, 2)] = args[i].substr(3);
+        else
+            world.names[""] = args[i];
+    }
+    std::string why;
+    if (!add_world(mod_dir, world, &why)) {
+        std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+        return 1;
+    }
+    std::printf("world %s added to %s, played in %s; its rooms: --add-room %s %s <key> ...\n", world.key.c_str(),
+                args[1].c_str(), world.like.c_str(), args[1].c_str(), world.key.c_str());
+    return 0;
+}
+
+// --remove-room <Mod> <world> <key>: a room the mod added, removed.
+int remove_room_command(const fs::path& root, const std::vector<std::string>& args) {
+    fs::path nitrofs, dump, mod_dir;
+    if (!room_command_paths(root, args[1], &nitrofs, &dump, &mod_dir))
+        return 1;
+    std::string why;
+    if (!remove_added_room(mod_dir, args[2], args[3], &why)) {
+        std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+        return 1;
+    }
+    std::printf("%s room %s removed from %s\n", args[2].c_str(), args[3].c_str(), args[1].c_str());
+    return 0;
+}
+
 int revert_room(const fs::path& root, const std::vector<std::string>& args) {
     fs::path nitrofs, dump, mod_dir;
     if (!room_command_paths(root, args[1], &nitrofs, &dump, &mod_dir))
@@ -686,6 +938,209 @@ int check_missions(const fs::path& root) {
         counts += (counts.empty() ? "" : ", ") + std::to_string(files) + " in " + std::to_string(n);
     std::printf("mission files by the worlds their scripts load: %s\n", counts.c_str());
     return ok ? 0 : 1;
+}
+
+// The game's files and a mod's folder for the new missions' commands (the mod made when `make`).
+bool mission_command_paths(const fs::path& root, const std::string& mod, bool make, fs::path* nitrofs,
+                           fs::path* mod_dir) {
+    *nitrofs = nitrofs_of(root);
+    if (nitrofs->empty()) {
+        std::fprintf(stderr, "khdays-studio: no extracted game files under %s\n",
+                     u8(root / "data" / "extracted").c_str());
+        return false;
+    }
+    *mod_dir = root / "mods" / path_u8(mod);
+    std::error_code ec;
+    std::string why;
+    if (!fs::is_directory(*mod_dir, ec) && !(make && create_mod(root / "mods", mod, &why))) {
+        std::fprintf(stderr, "khdays-studio: no mod %s in %s%s%s\n", mod.c_str(), u8(root / "mods").c_str(),
+                     why.empty() ? "" : ": ", why.c_str());
+        return false;
+    }
+    use_game_items(*nitrofs);
+    return true;
+}
+
+// --new-mission <Mod> <key> <template|none> <world> <room>: a new mission in Mission Mode's list after the game's,
+// made from a game mission's file or (none) from the places its map is given.
+int new_mission(const fs::path& root, const std::vector<std::string>& args) {
+    fs::path nitrofs, mod_dir;
+    if (!mission_command_paths(root, args[1], true, &nitrofs, &mod_dir))
+        return 1;
+    const int template_file = args[3] == "none" ? 0 : std::atoi(args[3].c_str());
+    if (template_file <= 0 && args[3] != "none") {
+        std::fprintf(stderr, "khdays-studio: give a game mission's number to start from, or none\n");
+        return 1;
+    }
+    std::string why;
+    if (!new_mod_mission(nitrofs, mod_dir, args[2], template_file, args[4], std::atoi(args[5].c_str()),
+                         &why)) {
+        std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+        return 1;
+    }
+    if (template_file > 0)
+        std::printf("mission %s made in %s (mi/mi/%04d's file, %s room %s); name it with --mission-set\n",
+                    args[2].c_str(), u8(mod_dir / "missions").c_str(), template_file, args[4].c_str(), args[5].c_str());
+    else
+        std::printf("mission %s made in %s (%s room %s, no template): give it a start and a wave with "
+                    "--mission-wave and --mission-set\n",
+                    args[2].c_str(), u8(mod_dir / "missions").c_str(), args[4].c_str(), args[5].c_str());
+    return 0;
+}
+
+int rebuilt(const fs::path& nitrofs, const fs::path& mod_dir, const std::string& key);
+
+// --mission-set <Mod> <key> <setting> [<language>] <value...>
+int mission_set(const fs::path& root, const std::vector<std::string>& args) {
+    fs::path nitrofs, mod_dir;
+    if (!mission_command_paths(root, args[1], false, &nitrofs, &mod_dir))
+        return 1;
+    bool language = false;
+    for (const MissionSetting& s : mission_settings())
+        language = language || (args[3] == s.name && s.language);
+    const std::size_t first = language ? 5 : 4;
+    if (args.size() <= first) {
+        std::fprintf(stderr, "khdays-studio: %s needs %sa value\n", args[3].c_str(),
+                     language ? "a language (en, fr, de, it, es) and " : "");
+        return 1;
+    }
+    std::string value;
+    for (std::size_t i = first; i < args.size(); ++i)
+        value += (i > first ? " " : "") + args[i];
+    std::string why;
+    if (!set_mod_mission(mod_dir, args[2], args[3], language ? args[4] : std::string(), value, &why)) {
+        std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+        return 1;
+    }
+    std::printf("mission %s: %s%s%s = %s (missions/missions.txt read back)\n", args[2].c_str(), args[3].c_str(),
+                language ? " " : "", language ? args[4].c_str() : "", value.c_str());
+    return rebuilt(nitrofs, mod_dir, args[2]);
+}
+
+// After a change of mission `key`: when it has waves, whether it builds as the port will build it; 1 when not.
+int rebuilt(const fs::path& nitrofs, const fs::path& mod_dir, const std::string& key) {
+    bool has_waves = false;
+    std::string why;
+    std::vector<std::string> off_floor;
+    const bool builds = check_mod_mission_build(nitrofs, mod_dir, key, &has_waves, &off_floor, &why);
+    for (const std::string& w : off_floor)
+        std::printf("warning: mission %s: %s\n", key.c_str(), w.c_str());
+    if (!builds) {
+        std::fprintf(stderr, "khdays-studio: mission %s does not build yet: %s (missions/missions.txt is changed)\n",
+                     key.c_str(), why.c_str());
+        return 1;
+    }
+    if (has_waves)
+        std::printf("mission %s builds as the port will build it at its start\n", key.c_str());
+    return 0;
+}
+
+// --mission-wave <Mod> <key> add <n> <class>x<count> ... at <x> <y> <z> | clear [<n>]
+// --mission-chest <Mod> <key> add <item> at <x> <y> <z> <heading> | clear
+// --mission-emblem <Mod> <key> add <kind> at <x> <y> <z> | clear
+int mission_lines(const fs::path& root, const std::vector<std::string>& args) {
+    fs::path nitrofs, mod_dir;
+    if (!mission_command_paths(root, args[1], false, &nitrofs, &mod_dir))
+        return 1;
+    const std::string what = args[0] == "--mission-wave" ? "wave" : args[0] == "--mission-chest" ? "chest" : "emblem";
+    const std::string& key = args[2];
+    std::string why;
+    if (args[3] == "clear") {
+        const std::string setting = what == "wave" && args.size() > 4 ? "wave " + args[4] : what;
+        int removed = 0;
+        if (!clear_mod_mission_lines(mod_dir, key, setting, &removed, &why)) {
+            std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+            return 1;
+        }
+        std::printf("mission %s: %d line(s) of %s taken away (missions/missions.txt read back)\n", key.c_str(), removed,
+                    setting.c_str());
+        return rebuilt(nitrofs, mod_dir, key);
+    }
+    const std::size_t first = what == "wave" ? 5 : 4;
+    if (args[3] != "add" || args.size() <= first) {
+        std::fprintf(stderr, "khdays-studio: %s add ... or clear\n", args[0].c_str());
+        return 1;
+    }
+    std::string value;
+    for (std::size_t i = first; i < args.size(); ++i)
+        value += (i > first ? " " : "") + args[i];
+    const std::string setting = what == "wave" ? "wave " + args[4] : what;
+    if (!add_mod_mission_line(mod_dir, key, setting, value, &why)) {
+        std::fprintf(stderr, "khdays-studio: %s\n", why.c_str());
+        return 1;
+    }
+    std::printf("mission %s: %s = %s (missions/missions.txt read back)\n", key.c_str(), setting.c_str(), value.c_str());
+    return rebuilt(nitrofs, mod_dir, key);
+}
+
+// --check-mod-missions <Mod>: every new mission of the mod read as the port reads it.
+int check_mod_missions_command(const fs::path& root, const std::string& mod) {
+    fs::path nitrofs, mod_dir;
+    if (!mission_command_paths(root, mod, false, &nitrofs, &mod_dir))
+        return 1;
+    std::vector<std::string> lines;
+    const bool ok = check_mod_missions(nitrofs, mod_dir, &lines);
+    for (const std::string& line : lines)
+        std::printf("%s\n", line.c_str());
+    return ok ? 0 : 1;
+}
+
+// The folder of mod `mod` under the port's mods/; empty (told) when there is none.
+fs::path mod_folder(const fs::path& root, const std::string& mod) {
+    const fs::path dir = root / "mods" / path_u8(mod);
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) {
+        std::fprintf(stderr, "khdays-studio: no mod %s in %s\n", mod.c_str(), u8(root / "mods").c_str());
+        return {};
+    }
+    return dir;
+}
+
+void print_plugin_parameters(const PluginParameters& p) {
+    for (int i = 0; i < p.list.count; ++i) {
+        const KhdaysParameter& q = p.list.list[i];
+        static const char* const kinds[] = {"integer", "number", "flag", "choice", "text"};
+        char value[512];
+        khdays_parameters_value_text(&q, value, sizeof(value));
+        std::printf("%s (%s) = %s%s%s\n", q.name, kinds[q.kind], value, q.label != nullptr ? "  -- " : "",
+                    q.label != nullptr ? q.label : "");
+    }
+    for (const std::string& problem : p.problems)
+        std::printf("problem: %s\n", problem.c_str());
+}
+
+// --plugin-parameters <Mod>: the parameters its plugin's mod describes, each with the value chosen (else its default).
+int plugin_parameters_command(const fs::path& root, const std::string& mod) {
+    const fs::path dir = mod_folder(root, mod);
+    PluginParameters p;
+    if (dir.empty())
+        return 1;
+    if (!load_plugin_parameters(dir, p)) {
+        std::printf("%s describes no plugin parameters (%s)\n", mod.c_str(), u8(p.descriptor).c_str());
+        return 1;
+    }
+    print_plugin_parameters(p);
+    return p.problems.empty() ? 0 : 1;
+}
+
+// --set-plugin-parameter <Mod> <name> <value>: one parameter's value chosen and saved beside its description.
+int set_plugin_parameter_command(const fs::path& root, const std::vector<std::string>& args) {
+    const fs::path dir = mod_folder(root, args[1]);
+    PluginParameters p;
+    std::string why;
+    if (dir.empty())
+        return 1;
+    if (!load_plugin_parameters(dir, p)) {
+        std::fprintf(stderr, "khdays-studio: %s describes no plugin parameters\n", args[1].c_str());
+        return 1;
+    }
+    if (!set_plugin_parameter(p, args[2], args[3], why) || !save_plugin_parameters(p, why)) {
+        std::fprintf(stderr, "khdays-studio: %s = %s: %s\n", args[2].c_str(), args[3].c_str(), why.c_str());
+        return 1;
+    }
+    std::printf("saved: %s\n", u8(p.values).c_str());
+    print_plugin_parameters(p);
+    return 0;
 }
 
 // --check-texts: every text file of the game read and written back the same.
@@ -1333,6 +1788,8 @@ bool take_port_argument(std::vector<std::string>& args, fs::path* root) {
     return true;
 }
 
+int render_model_command(const std::vector<std::string>& args);  // app/model_shot.cpp
+
 int run_command_line(const fs::path& root, const std::vector<std::string>& args) {
     if (args.size() == 2 && args[0] == "--list")
         return list(root, args[1]);
@@ -1364,10 +1821,33 @@ int run_command_line(const fs::path& root, const std::vector<std::string>& args)
         return mission_info(root, args);
     if (args.size() == 1 && args[0] == "--mission-commands")
         return mission_commands(root);
+    if (args.size() == 6 && args[0] == "--new-mission")
+        return new_mission(root, args);
+    if (args.size() >= 5 && args[0] == "--mission-set")
+        return mission_set(root, args);
+    if (args.size() == 2 && args[0] == "--check-mod-missions")
+        return check_mod_missions_command(root, args[1]);
+    if (args.size() >= 4 &&
+        (args[0] == "--mission-wave" || args[0] == "--mission-chest" || args[0] == "--mission-emblem"))
+        return mission_lines(root, args);
+    if ((args.size() == 5 || args.size() == 6) && args[0] == "--add-room")
+        return add_room_command(root, args);
+    if (args.size() == 4 && args[0] == "--remove-room")
+        return remove_room_command(root, args);
+    if (args.size() >= 4 && args[0] == "--add-world")
+        return add_world_command(root, args);
     if ((args.size() >= 4 && args.size() <= 6) && args[0] == "--replace-room")
         return replace_room(root, args);
     if (args.size() == 4 && args[0] == "--revert-room")
         return revert_room(root, args);
+    if ((args.size() == 2 || args.size() == 3) && args[0] == "--collection-rooms")
+        return collection_rooms(root, args);
+    if (args.size() == 2 && args[0] == "--collection-take")
+        return collection_take(root, args);
+    if (args.size() == 2 && args[0] == "--collection-room")
+        return collection_room(root, args);
+    if ((args.size() == 3 || args.size() == 4) && args[0] == "--render-model")
+        return render_model_command(args);
     if (args.size() == 2 && args[0] == "--rebuild-worlds")
         return rebuild_worlds(root, args);
     if (args.size() >= 4 && args[0] == "--assemble")
@@ -1382,6 +1862,10 @@ int run_command_line(const fs::path& root, const std::vector<std::string>& args)
         return take_back_sheet(root, args);
     if (args.size() == 5 && args[0] == "--replace-animation")
         return replace_animation(root, args);
+    if (args.size() == 2 && args[0] == "--plugin-parameters")
+        return plugin_parameters_command(root, args[1]);
+    if (args.size() == 4 && args[0] == "--set-plugin-parameter")
+        return set_plugin_parameter_command(root, args);
     std::fprintf(
         stderr,
         "usage: khdays-studio [--port <dir>]               the window\n"
@@ -1404,12 +1888,26 @@ int run_command_line(const fs::path& root, const std::vector<std::string>& args)
         "                                                  a KH2 map of the player's collection as a model\n"
         "       khdays-studio [--port <dir>] --kh2-maps [<world>]\n"
         "                                                  the KH2 maps of the player's copy, the Days rooms made from each\n"
-        "       khdays-studio [--port <dir>] --replace-room <Mod> <code> <room> [<model> | kh2:<map> [<collision model> | game | kh2-collision]]\n"
+        "       khdays-studio [--port <dir>] --replace-room <Mod> <code> <room> [<model> | <game>:<map> [<collision model> | game | own-collision]]\n"
         "                                                  a room made from a model (or again from its change)\n"
+        "       khdays-studio [--port <dir>] --add-room <Mod> <code> <key> <model> | <game>:<map> [<collision model> | own-collision]\n"
+        "                                                  a room of the mod's own added to a world, for its missions\n"
+        "       khdays-studio [--port <dir>] --remove-room <Mod> <code> <key>\n"
+        "                                                  a room the mod added, removed\n"
+        "       khdays-studio [--port <dir>] --add-world <Mod> <key> <code> [<language>=<name> | <name>]...\n"
+        "                                                  a world of the mod's own, played in game world <code>\n"
         "       khdays-studio [--port <dir>] --revert-room <Mod> <code> <room>\n"
         "                                                  a room's change and what it wrote removed\n"
         "       khdays-studio [--port <dir>] --rebuild-worlds <Mod>\n"
         "                                                  every world the mod changes written again\n"
+        "       khdays-studio [--port <dir>] --collection-rooms kh1|kh2|recom|ddd|bbs [<world>]\n"
+        "                                                  the maps of a game in the player's collections\n"
+        "       khdays-studio [--port <dir>] --collection-take <game>:<map>\n"
+        "                                                  a map's files taken out of the player's copy\n"
+        "       khdays-studio [--port <dir>] --collection-room <game>:<map>\n"
+        "                                                  a map made into a model (and its own collision)\n"
+        "       khdays-studio --render-model <model> <png> [<collision model>]\n"
+        "                                                  the model drawn as the previews draw it, from two sides\n"
         "       khdays-studio [--port <dir>] --model-animations <model>\n"
         "                                                  a model's animations, those made for it apart\n"
         "       khdays-studio [--port <dir>] --export-model <model> <out.gltf> [animations]\n"
@@ -1422,6 +1920,16 @@ int run_command_line(const fs::path& root, const std::vector<std::string>& args)
         "                                                  a mission's scripts, or one script's steps\n"
         "       khdays-studio [--port <dir>] --mission-commands\n"
         "                                                  every script command the missions use, by its handler\n"
+        "       khdays-studio [--port <dir>] --new-mission <Mod> <key> <game mission> <world> <room>\n"
+        "                                                  a new mission in Mission Mode's list, from a game mission\n"
+        "       khdays-studio [--port <dir>] --mission-set <Mod> <key> <setting> [<language>] <value...>\n"
+        "                                                  a new mission's name, objective, category, unlock...\n"
+        "       khdays-studio [--port <dir>] --mission-wave <Mod> <key> add <n> <class>x<count>... at <x> <y> <z> | clear [<n>]\n"
+        "                                                  a wave's spawner: the first at the start, each next when all are defeated\n"
+        "       khdays-studio [--port <dir>] --mission-chest <Mod> <key> add <item> at <x> <y> <z> <heading> | clear\n"
+        "       khdays-studio [--port <dir>] --mission-emblem <Mod> <key> add <kind> at <x> <y> <z> | clear\n"
+        "       khdays-studio [--port <dir>] --check-mod-missions <Mod>\n"
+        "                                                  a mod's new missions read as the port reads them\n"
         "       khdays-studio [--port <dir>] --assemble <sheet> screen:N|cells:N|sheet... [row:N] [palette:N] [scale:K]\n"
         "                                               [mod:<Mod>] <out.png>\n"
         "                                                  a 2D sheet assembled as a picture to edit\n"
@@ -1433,7 +1941,11 @@ int run_command_line(const fs::path& root, const std::vector<std::string>& args)
         "                                                  the arrangements that fit a sheet, best first\n"
         "       khdays-studio [--port <dir>] --take-back <Mod> <sheet> screen:N|cells:N|sheet... [row:N] [palette:N]\n"
         "                                                [colours:own|fit] <edited.png>\n"
-        "                                                  the edited picture into the mod's sheet\n");
+        "                                                  the edited picture into the mod's sheet\n"
+        "       khdays-studio [--port <dir>] --plugin-parameters <Mod>\n"
+        "                                                  its native plugin's parameters and the values chosen\n"
+        "       khdays-studio [--port <dir>] --set-plugin-parameter <Mod> <name> <value>\n"
+        "                                                  one of them chosen and saved\n");
     return 2;
 }
 

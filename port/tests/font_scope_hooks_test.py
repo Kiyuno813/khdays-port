@@ -1,5 +1,6 @@
 """Check scope hook generation without regenerating the complete port."""
 
+import ast
 import sys
 import unittest
 from pathlib import Path
@@ -12,6 +13,25 @@ import font_fit  # noqa: E402
 
 
 class ScopeHooks(unittest.TestCase):
+    def test_reflow_hooks(self):
+        for rel in (
+            font_layout.DRAW,
+            font_layout.LINE,
+            font_layout.ALIGN,
+            "libs/nns/g2d/calls/Text_AlignAnchor.c",
+            font_fit.DRAW,
+        ):
+            source = prepare.transform((prepare.DECOMP / rel).read_text(encoding="utf-8"))
+            output = font_layout.patch(source, rel)
+            self.assertIn("int token = khdays_ui_text_layout_begin();", output)
+            self.assertIn("khdays_ui_text_layout_actual(token);", output)
+            self.assertIn("khdays_ui_text_layout_end(token);", output)
+            if rel == font_layout.DRAW:
+                self.assertLess(
+                    output.index("if (khdays_ui_text_layout_glyph("),
+                    output.index("khdays_ui_text_position(font, x, y);"),
+                )
+
     def test_speaker_name_only(self):
         rel = "src/overlays/scenes/ov002_field/Ov002_SceneApplyPanelRequest.c"
         text = prepare.transform((prepare.DECOMP / rel).read_text(encoding="utf-8"))
@@ -28,6 +48,46 @@ class ScopeHooks(unittest.TestCase):
         dialogue = "src/overlays/scenes/ov002_field/Ov002_SceneDrawEntryLines.c"
         self.assertNotIn(dialogue, prepare.UI_HOOKS)
         self.assertNotIn(dialogue, prepare.FILE_HOOKS)
+
+    def test_scene_draw_node_keeps_every_hook(self):
+        rel = "src/engine/Scene_DrawNode.c"
+        text = prepare.transform((prepare.DECOMP / rel).read_text(encoding="utf-8"))
+        for before, after in prepare.HOOKS["main@0202aa9c"]:
+            self.assertEqual(text.count(before), 1)
+            text = text.replace(before, after)
+        self.assertIn("if (khdays_heart_node(node)) return;", text)
+        order = [
+            "khdays_character_caster_begin(node);",
+            "khdays_walk_draw_begin((int)node);",
+            "NNS_G3dDraw(node->object);",
+            "khdays_walk_draw_end();",
+            "khdays_character_caster_end();",
+        ]
+        places = [text.index(call) for call in order]
+        self.assertEqual(places, sorted(places))
+
+    def test_no_hook_table_entry_is_assigned_over(self):
+        tree = ast.parse(Path(prepare.__file__).read_text(encoding="utf-8"))
+        seen = set()
+        overwritten = []
+        for node in tree.body:
+            if isinstance(node, ast.For) and "HOOK_POINTS" in ast.dump(node.iter):
+                seen |= {key for key, *_ in prepare.HOOK_POINTS}
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            target = node.targets[0] if isinstance(node, ast.Assign) else node.target
+            if getattr(target, "id", "") == "HOOKS":
+                seen |= {key.value for key in node.value.keys if isinstance(key, ast.Constant)}
+            elif (
+                isinstance(node.value, ast.List)
+                and isinstance(target, ast.Subscript)
+                and getattr(target.value, "id", "") == "HOOKS"
+                and isinstance(target.slice, ast.Constant)
+            ):
+                if target.slice.value in seen:
+                    overwritten.append(f"line {node.lineno}: {target.slice.value}")
+                seen.add(target.slice.value)
+        self.assertEqual(overwritten, [], "use .append or += : `=` drops the hooks already there")
 
     def test_item_fit_hooks(self):
         source = prepare.transform((prepare.DECOMP / font_fit.ITEMS).read_text(encoding="utf-8"))
@@ -113,7 +173,7 @@ class ScopeHooks(unittest.TestCase):
     def test_initial_instruction_and_world(self):
         count = 0
         for rel, hooks in prepare.FILE_HOOKS.items():
-            if not rel.endswith("MainMenu_SetupTextSurfaces.c"):
+            if not rel.endswith("WorldMap_SetupTextSurfaces.c"):
                 continue
             text = prepare.transform((prepare.DECOMP / rel).read_text(encoding="utf-8"))
             for before, after in hooks:
@@ -149,6 +209,17 @@ class ScopeHooks(unittest.TestCase):
         self.assertNotIn(
             "src/overlays/scenes/ov002_field/Ov002_BuildPanelLabels.c", prepare.UI_HOOKS
         )  # Enemy-name captions are not command labels.
+
+    def test_notification_layout_observer(self):
+        rel = "src/overlays/scenes/ov002_field/Ov002_BlitTileRegion.c"
+        text = prepare.transform((prepare.DECOMP / rel).read_text(encoding="utf-8"))
+        for before, after in prepare.FILE_HOOKS[rel]:
+            self.assertEqual(text.count(before), 1)
+            text = text.replace(before, after)
+        self.assertIn("khdays_ui_notification_layout(pReq, nFlag)", text)
+        self.assertIn("Ov002_WriteMapRow(pReq->nDest", text)
+        rel = "src/overlays/scenes/ov002_field/Ov002_BuildTextItem.c"
+        self.assertIn(("Ov002_BuildTextItem", "text", "field.breakthrough", "scope"), prepare.UI_HOOKS[rel])
 
     def test_obtained_private_surface(self):
         rel = "src/overlays/scenes/ov002_field/Ov002_PanelDrawSlotCursor.c"

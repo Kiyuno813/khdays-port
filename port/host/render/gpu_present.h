@@ -35,7 +35,7 @@ int khdays_present_wants(void);
  * widescreen): for khdays_host_frame_widen. */
 int khdays_present_columns(void);
 
-/* The internal resolution the port's 2D is composed at (1 without it). */
+/* The scale the port's 2D is composed at (1 without it): the window's, or the 3D's when that is finer. */
 int khdays_present_scale(void);
 
 /* The window changed size: the "window" resolution and aspect follow it. */
@@ -52,7 +52,8 @@ int khdays_present_smooth(void);
 int khdays_present_refresh(void);
 
 /* An animated backdrop (the title's) moves at the display's pace even when a still menu sends no
- * frames: whether the latest picture has one, and drawing the newest package again for it. */
+ * frames: whether the latest picture has one, and drawing the newest package again for it (not while the
+ * game's own frames keep coming: each draws it, its motion with it). */
 int khdays_present_backdrop_moving(void);
 int khdays_present_refresh_backdrop(void);
 
@@ -66,10 +67,14 @@ int khdays_present_refresh_settling(void);
 int khdays_present_settings_button(void);
 int khdays_present_settings_button_at(float x, float y);
 
-/* Video: Show FPS. Whether it is on, and the pictures shown and the game's
- * logic frames a second, measured over the last half second. */
-int khdays_present_fps(int *pictures, int *frames);
+/* Video: Show FPS. Whether it is on, and the pictures shown a second, measured over the last half
+ * second (the game's own frames are not shown: players took them for the frame rate). */
+int khdays_present_fps(int *pictures);
 void khdays_present_screens(const uint32_t *upper_then_lower);
+
+/* The window's drawing of a picture (redraw): how long it took, and how long presenting it waited (for
+ * the graphics card and the display) -- the session log's timings while the Moogle Shop shows. */
+void khdays_present_redraw_took(uint64_t drawing_ns, uint64_t presenting_ns);
 
 /* The picture settings, from the next frame drawn. */
 void khdays_present_set_video(const KhdaysVideo *video);

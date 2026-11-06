@@ -126,8 +126,15 @@ void khdays_sound_output_set(const KhdaysSound *settings)
 void khdays_sound_output_mute(int mute)
 {
     SDL_AudioStream *stream = (SDL_AudioStream *)SDL_GetAtomicPointer(&audio);
+    const int was = SDL_GetAtomicInt(&muted);
     SDL_SetAtomicInt(&muted, mute != 0);
     if (stream != NULL) {
+        if (was && !mute) {
+            /* what waits in the stream was made under the video, unheard (the music left playing then):
+             * dropped, the game's sound goes on from now after a lead of silence */
+            SDL_ClearAudioStream(stream);
+            SDL_SetAtomicInt(&needs_lead, 1);
+        }
         apply_gain(stream);
     }
 }
@@ -163,9 +170,19 @@ static int sound_thread(void *unused)
     Uint64 report_at = SDL_GetTicks() + 1000;
     (void)unused;
     SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_HIGH);
+    float ratio = 1.0f;
     for (;;) {
         SDL_Delay(1);
         khdays_sound_bridge_advance(khdays_clock_cycles());
+        {
+            /* the DS's time at the screen's lock's rate: its sound played as fast */
+            const float now = (float)khdays_clock_rate();
+            SDL_AudioStream *stream = (SDL_AudioStream *)SDL_GetAtomicPointer(&audio);
+            if (stream != NULL && (now - ratio > 0.0001f || ratio - now > 0.0001f)) {
+                SDL_SetAudioStreamFrequencyRatio(stream, now);
+                ratio = now;
+            }
+        }
         if (khdays_movie_hd_game_level() != level_set) {
             SDL_AudioStream *stream = (SDL_AudioStream *)SDL_GetAtomicPointer(&audio);
             if (stream != NULL) {

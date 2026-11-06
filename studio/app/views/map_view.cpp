@@ -10,6 +10,8 @@
 #include "core/models/model_files.h"
 #include "core/files/paths.h"
 #include "core/rooms/collision_edits.h"
+#include "core/rooms/added_rooms.h"
+#include "core/rooms/collection_source.h"
 #include "core/rooms/kh2_source.h"
 #include "core/rooms/room_change.h"
 #include "mods/room_animation.h"  // port/runtime: as the port moves a room
@@ -30,6 +32,7 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <deque>
@@ -73,8 +76,8 @@ struct Replacing {
     // placed's textures as the port draws them for a material (port/runtime/mods/models.cpp): opaque all opaque,
     // a mask's texels whole or gone by its cutoff; by texture name and that alpha mode
     std::map<std::string, std::vector<std::uint8_t>> shaped;
-    RoomPlacement placed_with;                 // where `placed` was put (drawn moved to the place now while dragged)
-    SurfaceMap surfaces;                       // its floors and roofs from above, as placed_with puts them
+    RoomPlacement placed_with;  // where `placed` was put (drawn moved to the place now while dragged)
+    SurfaceMap surfaces;        // its floors and roofs from above, as placed_with puts them
     bool dirty = false, built_ok = false;
     RoomCollision built;
     CollisionReport report;
@@ -83,7 +86,7 @@ struct Replacing {
     int view = 0;  // 0 yours, 1 the game's, 2 both
     bool next_is_collision = false;
     bool other_collision = false;  // the collision from another model, chosen (its file perhaps not yet)
-    bool kh2_collision = false;    // that model the KH2 map's own floors and walls
+    bool kh2_collision = false;    // that model the map's own floors and walls (KH2's, or another game's)
     std::string placed_text;       // how the model was placed (lined up, as it is, or to place by hand)
     bool placed_ok = true;
     // the collision edited by hand (r.edits) over `base` (the game's kept, or the model's made): `built` is
@@ -93,7 +96,7 @@ struct Replacing {
     EditsApplied applied;
     std::map<FaceKey, FaceKey> shown_to_base;  // a face moved to another kind, as shown -> as the edit names it
     std::string edit_error;
-    // what Undo and Redo step through: the hand edits, the markers moved and the exits' models moved
+    // what Undo and Redo step through: the hand edits, the markers moved and the gate markers moved
     struct UndoStep {
         CollisionEdits edits;
         std::map<std::string, std::array<std::int32_t, 4>> markers;
@@ -117,6 +120,8 @@ struct MapView {
 
     // as the game shows it first; the collision laid over it when asked
     bool show_models = true, show_ground = false, show_walls = false, show_ceilings = false, show_markers = true;
+    bool show_sky = false;    // a sky around the room hides it from outside: drawn only when asked
+    float view_share = 0.5f;  // the picture's share of the panel's height (dragged below it)
     float yaw = 30.0f, pitch = 35.0f, distance = 40.0f;
     std::array<float, 3> target{0, 0, 0};
     // a mission's point asked for (See spawner, See chest) ringed, breathing, for kRingSeconds (since < 0:
@@ -125,7 +130,7 @@ struct MapView {
     std::array<float, 3> ring_at{};
     int ring_kind = 0;
     int picked_list = -1, picked_face = -1, picked_marker = -1;
-    // an exit's model picked in the picture: its link key and which of its five models
+    // a gate marker picked in the picture: its link key and which of its five models
     bool picked_gate = false;
     int picked_gate_key = 0, picked_gate_part = 0;
     std::unique_ptr<Preview> preview;
@@ -164,14 +169,14 @@ struct MapView {
     float gizmo_turned = 0, gizmo_sign = 1;
     // the picked marker's, exit model's or mission point's handles (shown on click, apart from the shapes'
     // modes): which handle is dragged (0-2 an axis, 3 over the ground, 20 the facing ring), what it moves
-    // (0 a room marker, 1 an exit's model, 2 a mission point) and where it was when the drag began
+    // (0 a room marker, 1 a gate marker, 2 a mission point) and where it was when the drag began
     int point_drag = -1, point_what = -1;
     ImVec2 point_from{0, 0}, point_last{0, 0}, point_centre{0, 0};
     ImVec2 point_pu[2]{};
     float point_turned = 0, point_sign = 1;
     std::array<float, 3> point_start{};
     float point_start_facing = 0;
-    bool point_gate_had = false;  // an exit's model: whether the change moved it before the drag
+    bool point_gate_had = false;  // a gate marker: whether the change moved it before the drag
     std::array<std::int32_t, 3> point_gate_was{};
 };
 
@@ -229,6 +234,53 @@ struct SaveJob {
     }
 };
 SaveJob saving;
+// The rooms of the other games in the player's collections (KH1, Re:Chain of Memories, Dream Drop Distance), listed and
+// made on a thread of their own as KH2's are, what it made taken by the window once done. Kept across rooms.
+struct OtherPicker {
+    bool shown = false;
+    int game = 0;          // in other_games()
+    int world = 0;         // in `worlds`
+    int listed_game = -1;  // the game `maps` are of
+    std::vector<CollectionMap> maps;
+    std::vector<std::string> worlds;
+    std::map<std::string, bool> out;  // a map taken out of the copy already
+    std::string error;
+    fs::path copy;
+    std::string copy_for = "\x01";  // the game and setting `copy` was found for
+    std::thread worker;
+    std::atomic<bool> busy{false};
+    std::string working;  // the map being made; empty while listing
+    // left by the worker
+    std::mutex mutex;
+    bool listed = false, made = false;
+    std::vector<CollectionMap> found;
+    std::string done_source, failed;
+    fs::path model;
+    CollectionMade outcome;
+    ~OtherPicker() {
+        if (worker.joinable())
+            worker.join();
+    }
+};
+OtherPicker other;
+
+std::vector<const CollectionGameInfo*> other_games() {
+    std::vector<const CollectionGameInfo*> out;
+    for (const auto& g : collection_games()) {
+        if (g.game != CollectionGame::kh2)
+            out.push_back(&g);
+    }
+    return out;
+}
+
+// The replaced room's other game and its map's name (ddd, eh_01), when it is made from one.
+const CollectionGameInfo* source_game(const RoomReplacement& r, std::string* map) {
+    const auto colon = r.source.find(':');
+    if (colon == std::string::npos)
+        return nullptr;
+    *map = r.source.substr(colon + 1);
+    return collection_game(r.source.substr(0, colon));
+}
 
 // The collision drawn and picked: the one made when the modder's is shown
 // (the game's when it is kept).
@@ -458,7 +510,10 @@ void open(App& app) {
                 p.collision_source = folder / path_u8(p.r.collision);
                 if (!import_model(p.collision_source, &p.raw_collision, &why))
                     p.error = why;
-                p.kh2_collision = !p.r.kh2.empty() && p.r.collision == p.r.kh2 + "_collision.gltf";
+                std::string map = p.r.kh2;
+                if (map.empty())
+                    (void)source_game(p.r, &map);
+                p.kh2_collision = !map.empty() && p.r.collision == map + "_collision.gltf";
             }
             p.dirty = p.error.empty();
         }
@@ -524,7 +579,7 @@ void rebuild() {
     p.error.clear();
     p.warnings.clear();
     if (p.active && p.model_source.empty()) {
-        // the game's room kept as it looks and plays: only its markers (and exits' models) moved
+        // the game's room kept as it looks and plays: only its markers (and gate markers) moved
         p.placed = {};
         p.shaped.clear();
         p.surfaces = {};
@@ -765,6 +820,8 @@ void draw_room(App& app, ImVec2 size) {
                 }
             }
             for (const auto& mesh : placed.model.meshes) {
+                if (mesh.sky && !m.show_sky)
+                    continue;  // from outside, its sky hides it
                 std::string shown = mesh.texture_name;
                 if (!mesh.texture_frames.empty()) {
                     shown = mesh.texture_frames[khdays::room::frame_at(mesh.texture_frames, mesh.texture_frames_loop,
@@ -1063,7 +1120,7 @@ void draw_room(App& app, ImVec2 size) {
             }
         }
     }
-    // the exits' models (the world's gate models of this room's links), where the change puts them; the one
+    // the gate markers (the world's gate models of this room's links), where the change puts them; the one
     // nearest the pointer (nearer than any marker) can be picked
     bool near_gate = false;
     int near_gate_key = 0, near_gate_part = 0;
@@ -1554,7 +1611,8 @@ void draw_room(App& app, ImVec2 size) {
                 const float reach = 60.0f * k / px_per_unit;  // the arrows' length, in units (the same on screen)
                 for (int i = 0; i < 3; ++i) {
                     ImVec2 tip;
-                    if (screen(plus(now_at, axes[i], reach), &tip) && std::hypot(tip.x - c2.x, tip.y - c2.y) > 12.0f * k)
+                    if (screen(plus(now_at, axes[i], reach), &tip) &&
+                        std::hypot(tip.x - c2.x, tip.y - c2.y) > 12.0f * k)
                         handles.push_back({i, c2, tip, true, axis_colour[i]});
                 }
                 handles.push_back({3, c2, c2, false, IM_COL32(240, 240, 240, 255)});
@@ -1563,7 +1621,8 @@ void draw_room(App& app, ImVec2 size) {
                     for (int n = 0; n <= 48; ++n) {
                         const float a = static_cast<float>(n) / 48.0f * 6.2831853f;
                         ImVec2 q;
-                        if (screen(V{now_at[0] + std::sin(a) * radius, now_at[1], now_at[2] + std::cos(a) * radius}, &q))
+                        if (screen(V{now_at[0] + std::sin(a) * radius, now_at[1], now_at[2] + std::cos(a) * radius},
+                                   &q))
                             ring.push_back(q);
                     }
                 }
@@ -1689,7 +1748,8 @@ void draw_room(App& app, ImVec2 size) {
             if (m.point_drag >= 0 && seen && !handles.empty()) {
                 const ImVec2 shift(c2.x - handles.back().b.x, c2.y - handles.back().b.y);
                 for (auto& hd : handles)
-                    hd.a = ImVec2(hd.a.x + shift.x, hd.a.y + shift.y), hd.b = ImVec2(hd.b.x + shift.x, hd.b.y + shift.y);
+                    hd.a = ImVec2(hd.a.x + shift.x, hd.a.y + shift.y),
+                    hd.b = ImVec2(hd.b.x + shift.x, hd.b.y + shift.y);
                 for (auto& q : ring)
                     q = ImVec2(q.x + shift.x, q.y + shift.y);
             }
@@ -1827,7 +1887,7 @@ void draw_room(App& app, ImVec2 size) {
         }
     };
     // while picking: what the pointer is over, drawn lighter next frame (nothing while over a marker or an
-    // exit's model, which a click would pick instead, or while a box is drawn)
+    // gate marker, which a click would pick instead, or while a box is drawn)
     m.hover_list = m.hover_face = m.hover_shape = -1;
     if (editing_view && hovered && !m.box_on && !gizmo_owns && near_marker < 0 && !near_gate &&
         !ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
@@ -1835,7 +1895,7 @@ void draw_room(App& app, ImVec2 size) {
         if (m.hover_face >= 0)
             m.hover_shape = shape_of_shown(m.hover_list, static_cast<std::size_t>(m.hover_face));
     }
-    // a click picks the nearest marker or exit's model, else the nearest face under the pointer
+    // a click picks the nearest marker or gate marker, else the nearest face under the pointer
     if (!boxed && !m.box_on && !gizmo_owns && hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
         ImGui::GetIO().MouseDragMaxDistanceSqr[0] < 16.0f) {
         m.picked_marker = near_marker;
@@ -1902,9 +1962,9 @@ void draw_room(App& app, ImVec2 size) {
         m.distance *= std::pow(0.9f, ImGui::GetIO().MouseWheel);
 }
 
-// The exit's model picked in the picture: where it stands, moved while its fields are dragged (any change of
-// the room saves its exits' models' places), back to the game's place on request.
-// The picked exit's model's name: its exit, its part and the model it shows.
+// The gate marker picked in the picture: where it stands, moved while its fields are dragged (any change of
+// the room saves its gate markers' places), back to the game's place on request.
+// The picked gate marker's name: its gate, its part and the model it shows.
 std::string gate_name(const App& app) {
     for (const auto& g : m.world.gate_models) {
         if (g.key == m.picked_gate_key && m.picked_gate_part >= 0 && m.picked_gate_part < 5)
@@ -1915,7 +1975,7 @@ std::string gate_name(const App& app) {
     return {};
 }
 
-// The picked exit's model: its name (in the panel), its place in fields shared by the panel and the bar over the
+// The picked gate marker: its name (in the panel), its place in fields shared by the panel and the bar over the
 // picture (bar true; both write the change at once, so both follow a drag), and putting it back.
 void draw_picked_gate(App& app, bool bar) {
     const auto lang = app.language;
@@ -1951,7 +2011,7 @@ void draw_picked_gate(App& app, bool bar) {
     ImGui::SetNextItemWidth((bar ? 15.0f : 20.0f) * ImGui::GetFontSize());
     const bool dragged =
         ImGui::DragFloat3(bar ? "##at" : tr(lang, S::map_marker_place), v, 0.02f, -100000.0f, 100000.0f, "%.2f");
-    undo_field();  // the exits' models as they were, for undo
+    undo_field();  // the gate markers as they were, for undo
     if (dragged) {
         p.r.gate_points[id] = {static_cast<std::int32_t>(std::lround(v[0] * 4096.0)),
                                static_cast<std::int32_t>(std::lround(v[1] * 4096.0)),
@@ -2095,7 +2155,7 @@ void mission_point_fields(App& app) {
 }
 
 // A row under the tools, only while something is picked: its name and its place (and facing) to drag or type,
-// the same values as the left panel's. Picking a room marker or an exit's model starts a markers-only change
+// the same values as the left panel's. Picking a room marker or a gate marker starts a Marker Move Mode change
 // of the room when there is none, so they are movable at once.
 void draw_selection_bar(App& app) {
     const auto lang = app.language;
@@ -2333,7 +2393,7 @@ void draw_names_and_exits(App& app) {
     draw_gate_models(app);
 }
 
-// The exits' models of this room: where they stand, moved with the change.
+// The gate markers of this room: where they stand, moved with the change.
 void draw_gate_models(App& app) {
     const auto lang = app.language;
     Replacing& p = m.rep;
@@ -2436,11 +2496,34 @@ void line_up(App& app) {
         p.dirty = true;
         return;
     }
-    const RoomAlignment a = !p.r.kh2.empty() && m.has_collision ? kh2_alignment(game_points(), m.collision, p.raw)
-                                                                : align_with_room(game_points(), p.raw);
+    // another game's room: in its game's units, by its own floors when it has them
+    std::string map;
+    const CollectionGameInfo* game = source_game(p.r, &map);
+    RoomAlignment a;
+    std::pair<std::size_t, std::size_t> on_floors{0, 0};
+    if (game != nullptr && game->units > 0 && m.has_collision) {
+        assets::ImportedModel floors;
+        std::string why;
+        std::error_code ec;
+        const fs::path own = collection_made_collision(app.settings.root, *game, map);
+        const bool own_floors = fs::is_regular_file(own, ec) && import_model(own, &floors, &why);
+        a = kh2_alignment(game_points(), m.collision, own_floors ? floors : p.raw, game->units);
+        if (a.verdict == RoomAlignment::kh2_units)
+            on_floors = onto_floors(own_floors ? floors : p.raw, m.collision, &a);
+    } else {
+        a = !p.r.kh2.empty() && m.has_collision ? kh2_alignment(game_points(), m.collision, p.raw)
+                                                : align_with_room(game_points(), p.raw);
+    }
     char share[16];
     std::snprintf(share, sizeof(share), "%.0f", a.share * 100.0);
-    if (a.verdict == RoomAlignment::kh2_units) {
+    if (a.verdict == RoomAlignment::kh2_units && game != nullptr) {
+        p.r.place = a.place;
+        char scale[32];
+        std::snprintf(scale, sizeof(scale), "%g", a.place.scale);
+        p.placed_text = fmt(app.language, S::map_align_units,
+                            {game->name, scale, std::to_string(on_floors.first), std::to_string(on_floors.second)});
+        p.placed_ok = on_floors.first * 2 >= on_floors.second;
+    } else if (a.verdict == RoomAlignment::kh2_units) {
         p.r.place = a.place;
         char scale[32];
         std::snprintf(scale, sizeof(scale), "%g", a.place.scale);
@@ -2484,13 +2567,23 @@ void line_up(App& app) {
     p.dirty = true;
 }
 
-// The KH2 map's own floors and walls as the room's collision model; false (the reason in the room's
-// error) when they cannot be made.
-bool load_kh2_collision(App& app, const std::string& map) {
+// The map's own floors and walls (KH2's, or another game's made with its model) as the room's collision model; false
+// (the reason in the room's error) when there are none.
+bool load_own_collision(App& app) {
     Replacing& p = m.rep;
     fs::path file;
-    std::string why;
-    if (make_kh2_collision(app.settings.root, map, &file, &why) && import_model(file, &p.raw_collision, &why)) {
+    std::string why, map;
+    bool found = false;
+    if (const CollectionGameInfo* game = source_game(p.r, &map)) {
+        std::error_code ec;
+        file = collection_made_collision(app.settings.root, *game, map);
+        found = fs::is_regular_file(file, ec);
+        if (!found)
+            why = p.r.source + ": no floors and walls of its own";
+    } else {
+        found = make_kh2_collision(app.settings.root, p.r.kh2, &file, &why);
+    }
+    if (found && import_model(file, &p.raw_collision, &why)) {
         p.collision_source = file;
         return true;
     }
@@ -2542,6 +2635,7 @@ void kh2_take(App& app, const Item& item) {
     kh2.radars.erase(map);
     m.rep.next_is_collision = false;
     m.rep.r.kh2 = map;
+    m.rep.r.source.clear();
     // the game's floor and walls kept, unless KH2's were chosen
     if (!m.rep.kh2_collision) {
         m.rep.r.keep_collision = true;
@@ -2552,7 +2646,7 @@ void kh2_take(App& app, const Item& item) {
     }
     room_offer(app, item, model);
     if (m.rep.kh2_collision) {
-        load_kh2_collision(app, map);  // KH2's own floors and walls: the new map's
+        load_own_collision(app);  // KH2's own floors and walls: the new map's
         m.rep.dirty = true;
     }
     app.tell(fmt(app.language, S::map_kh2_made,
@@ -2676,11 +2770,193 @@ void draw_kh2_picker(App& app) {
             ImGui::TextUnformatted(name.c_str());
         if (!kh2.out[name])
             ImGui::TextDisabled("%s", tr(lang, S::map_kh2_not_out));
-        ImGui::BeginDisabled(kh2.busy);
+        ImGui::BeginDisabled(kh2.busy || room_adder_busy());
         if (ImGui::SmallButton(tr(lang, S::map_kh2_use)))
             kh2_start(app, name, {});
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr(lang, S::map_add_room))) {
+            CollectionMap map;
+            map.name = name;
+            room_adder_open_map("map", collection_game("kh2"), map, m.world.code);
+        }
         ImGui::EndDisabled();
         ImGui::EndGroup();
+        ImGui::PopID();
+    }
+    ImGui::Unindent();
+}
+
+// The other game's worker's results taken: its list of maps, or the room it made (offered as the room's model, its
+// own floors and walls as its collision when it has them).
+void other_take(App& app, const Item& item) {
+    bool listed = false, made = false;
+    std::string failed, source;
+    fs::path model;
+    CollectionMade outcome;
+    {
+        std::lock_guard lock(other.mutex);
+        std::swap(listed, other.listed);
+        std::swap(made, other.made);
+        failed = other.failed;
+        source = other.done_source;
+        model = other.model;
+        outcome = other.outcome;
+        if (listed)
+            other.maps = std::move(other.found);
+    }
+    if (other.worker.joinable() && !other.busy)
+        other.worker.join();
+    if (listed) {
+        other.error = failed;
+        other.listed_game = other.game;
+        other.world = 0;
+        other.worlds.clear();
+        other.out.clear();
+        const CollectionGameInfo* game = other_games()[static_cast<std::size_t>(other.game)];
+        for (const auto& mp : other.maps) {
+            if (other.worlds.empty() || other.worlds.back() != mp.world)
+                other.worlds.push_back(mp.world);
+            other.out[mp.name] = collection_map_taken_out(app.settings.root, *game, mp);
+        }
+    }
+    if (!made)
+        return;
+    if (!failed.empty()) {
+        other.error = failed;
+        app.tell(fmt(app.language, S::save_failed, {failed}), false);
+        return;
+    }
+    other.error.clear();
+    other.out[source.substr(source.find(':') + 1)] = true;
+    Replacing& p = m.rep;
+    p.next_is_collision = false;
+    p.r.kh2.clear();
+    p.r.source = source;
+    // its own floors and walls when it has them (the game room's would not fit it), else made from the model
+    p.r.keep_collision = false;
+    p.kh2_collision = p.other_collision = outcome.collision;
+    p.collision_source.clear();
+    p.raw_collision = {};
+    p.r.collision.clear();
+    room_offer(app, item, model);
+    if (p.kh2_collision && !load_own_collision(app))
+        p.kh2_collision = p.other_collision = false;
+    p.dirty = true;
+    app.tell(fmt(app.language, S::map_other_made,
+                 {source, std::to_string(outcome.triangles), std::to_string(outcome.pictures)}),
+             true);
+    for (const auto& line : outcome.report)
+        app.tell(source + ": " + line, false);
+}
+
+// `map` of `game` made into a room on the worker; without one, the game's maps listed.
+void other_start(App& app, const CollectionGameInfo* game, const CollectionMap* map) {
+    if (other.busy)
+        return;
+    if (other.worker.joinable())
+        other.worker.join();
+    other.busy = true;
+    other.working = map != nullptr ? map->name : std::string();
+    other.error.clear();
+    const Settings settings = app.settings;
+    const bool make = map != nullptr;
+    const CollectionMap chosen = make ? *map : CollectionMap{};
+    other.worker = std::thread([settings, game, chosen, make] {
+        std::vector<CollectionMap> found;
+        std::string why;
+        CollectionMade outcome;
+        const bool ok = make ? make_collection_room(settings, *game, chosen, &outcome, &why)
+                             : collection_maps(settings, *game, &found, &why);
+        std::lock_guard lock(other.mutex);
+        other.failed = ok ? std::string() : why;
+        if (make) {
+            other.done_source = std::string(game->code) + ":" + chosen.name;
+            other.model = collection_made_model(settings.root, *game, chosen.name);
+            other.outcome = std::move(outcome);
+            other.made = true;
+        } else {
+            other.found = std::move(found);
+            other.listed = true;
+        }
+        other.busy = false;
+    });
+}
+
+// The other games' rooms of the player's copies to take as the room's model: a game, its worlds, their maps.
+void draw_other_picker(App& app) {
+    const auto lang = app.language;
+    const ImVec4 warn(0.95f, 0.8f, 0.35f, 1);
+    ImGui::Indent();
+    ImGui::TextWrapped("%s", tr(lang, S::map_other_hint));
+    const auto games = other_games();
+    std::vector<const char*> names;
+    for (const auto* g : games)
+        names.push_back(g->name);
+    ImGui::BeginDisabled(other.busy);
+    ImGui::SetNextItemWidth(20 * ImGui::GetFontSize());
+    if (ImGui::Combo(tr(lang, S::map_other_game), &other.game, names.data(), static_cast<int>(names.size()))) {
+        other.maps.clear();
+        other.worlds.clear();
+        other.listed_game = -1;
+    }
+    ImGui::EndDisabled();
+    const CollectionGameInfo* game = games[static_cast<std::size_t>(other.game)];
+    const std::string copy_for =
+        std::to_string(other.game) + "|" + app.settings.collection_1525 + "|" + app.settings.collection_28;
+    if (other.copy_for != copy_for) {
+        other.copy = collection_copy(app.settings, *game);
+        other.copy_for = copy_for;
+    }
+    if (other.copy.empty()) {
+        ImGui::TextColored(warn, "%s", fmt(lang, S::map_other_no_copy, {game->name}).c_str());
+        ImGui::Unindent();
+        return;
+    }
+    ImGui::TextDisabled("%s", u8(other.copy).c_str());
+    ImGui::BeginDisabled(other.busy);
+    if (ImGui::Button(tr(lang, S::map_kh2_list)))
+        other_start(app, game, nullptr);
+    ImGui::EndDisabled();
+    if (other.busy) {
+        ImGui::TextDisabled("%s", other.working.empty() ? tr(lang, S::map_kh2_list)
+                                                        : fmt(lang, S::map_kh2_working, {other.working}).c_str());
+    }
+    if (!other.error.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.4f, 0.4f, 1));
+        ImGui::TextWrapped("%s", other.error.c_str());
+        ImGui::PopStyleColor();
+    }
+    if (other.listed_game != other.game || other.worlds.empty()) {
+        ImGui::Unindent();
+        return;
+    }
+    std::vector<const char*> worlds;
+    for (const auto& w : other.worlds)
+        worlds.push_back(w.c_str());
+    ImGui::SetNextItemWidth(6 * ImGui::GetFontSize());
+    ImGui::Combo(tr(lang, S::map_other_world), &other.world, worlds.data(), static_cast<int>(worlds.size()));
+    const std::string& world = other.worlds[static_cast<std::size_t>(other.world)];
+    for (const auto& mp : other.maps) {
+        if (mp.world != world)
+            continue;
+        ImGui::PushID(mp.name.c_str());
+        ImGui::TextUnformatted(mp.name.c_str());
+        if (collection_map_falling(*game, mp)) {
+            ImGui::SameLine();
+            ImGui::TextColored(warn, "%s", tr(lang, S::map_other_falling));
+        }
+        if (!other.out[mp.name]) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", tr(lang, S::map_kh2_not_out));
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(other.busy || room_adder_busy());
+        if (ImGui::SmallButton(tr(lang, S::map_kh2_use)))
+            other_start(app, game, &mp);
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr(lang, S::map_add_room)))
+            room_adder_open_map("map", game, mp, m.world.code);
+        ImGui::EndDisabled();
         ImGui::PopID();
     }
     ImGui::Unindent();
@@ -2799,6 +3075,8 @@ bool draw_model_steps(App& app, const Item& item) {
     ImGui::RadioButton(tr(lang, S::map_collision_other), &source, 2);
     if (!p.r.kh2.empty())
         ImGui::RadioButton(tr(lang, S::map_collision_kh2), &source, 3);
+    else if (!p.r.source.empty())
+        ImGui::RadioButton(tr(lang, S::map_collision_own), &source, 3);
     if (source == 2) {
         ImGui::SameLine();
         ImGui::TextUnformatted(p.collision_source.empty() ? "-" : u8(p.collision_source.filename()).c_str());
@@ -2817,7 +3095,7 @@ bool draw_model_steps(App& app, const Item& item) {
             p.raw_collision = {};
             p.r.collision.clear();
         }
-        if (source == 3 && !load_kh2_collision(app, p.r.kh2))
+        if (source == 3 && !load_own_collision(app))
             p.kh2_collision = p.other_collision = false;
         p.dirty = true;
     }
@@ -2850,7 +3128,7 @@ bool draw_model_steps(App& app, const Item& item) {
     return changed;
 }
 
-// A change of the room that keeps the game's look and floor (markers, exits' models and hand edits only).
+// A change of the room that keeps the game's look and floor (markers, gate markers and hand edits only).
 void start_kept_change() {
     Replacing& p = m.rep;
     p = Replacing{};
@@ -2890,7 +3168,7 @@ Replacing::UndoStep undo_state() {
     return {m.rep.r.edits, m.rep.r.markers, m.rep.r.gate_points};
 }
 
-// Before each change of the hand edits, a marker or an exit's model: all of them as they were, for undo.
+// Before each change of the hand edits, a marker or a gate marker: all of them as they were, for undo.
 void edit_push() {
     Replacing& p = m.rep;
     p.undo.push_back(undo_state());
@@ -3459,10 +3737,10 @@ void start_save(App& app, bool revert) {
         };
         WorldOutcome o;
         std::string why;
-        const bool ok = saving.revert ? revert_change(files, dump, saving.mod_dir, saving.world, saving.room, &o,
-                                                      &why, progress)
-                                      : save_change(files, dump, saving.mod_dir, change, saving.model_source,
-                                                    saving.collision_source, &o, &why, progress);
+        const bool ok = saving.revert
+                            ? revert_change(files, dump, saving.mod_dir, saving.world, saving.room, &o, &why, progress)
+                            : save_change(files, dump, saving.mod_dir, change, saving.model_source,
+                                          saving.collision_source, &o, &why, progress);
         std::lock_guard lock(saving.mutex);
         saving.ok = ok;
         saving.why = why;
@@ -3738,11 +4016,23 @@ void draw_replace(App& app, const Item& item) {
     ImGui::SeparatorText(tr(lang, S::map_step_model));
     ImGui::TextWrapped("%s", tr(lang, S::map_replace_hint));
     kh2_take(app, item);
+    other_take(app, item);
+    {
+        std::string added_world, added_key;
+        draw_room_adder(app, "map", &added_world, &added_key);
+    }
     if (ImGui::Button(tr(lang, S::choose_file))) {
         p.next_is_collision = false;
-        p.r.kh2.clear();  // the modder's own model, not a KH2 room
+        p.r.kh2.clear();  // the modder's own model, not a KH2 room nor another game's
+        p.r.source.clear();
         choose_file(app, item);
     }
+    // or, none of the game's replaced, as a room of the mod's own
+    same_line_if_room(button_width(tr(lang, S::map_add_model_room)));
+    ImGui::BeginDisabled(room_adder_busy());
+    if (ImGui::Button(tr(lang, S::map_add_model_room)))
+        room_adder_choose_model(app, "map", m.world.code);
+    ImGui::EndDisabled();
     same_line_if_room(button_width(tr(lang, S::map_export)));
     if (ImGui::Button(tr(lang, S::map_export)))
         choose_room_export(app, item);
@@ -3755,30 +4045,26 @@ void draw_replace(App& app, const Item& item) {
         kh2.shown = !kh2.shown;
     if (kh2.shown)
         draw_kh2_picker(app);
+    same_line_if_room(button_width(tr(lang, S::map_other_source)));
+    if (ImGui::Button(tr(lang, S::map_other_source)))
+        other.shown = !other.shown;
+    if (other.shown)
+        draw_other_picker(app);
     if (mod == nullptr) {
         ImGui::TextColored(warn, "%s", tr(lang, S::choose_mod_first));
         return;
     }
-    if (!p.active) {
-        // or no model at all: the game's room kept, only its markers and exits' models moved
-        if (ImGui::Button(tr(lang, S::map_markers_only)) && m.room != nullptr && m.has_collision) {
-            start_kept_change();
-            m.show_markers = true;
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("(?)");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", tr(lang, S::map_markers_only_hint));
+    // no change yet: clicking a marker in the picture starts Marker Move Mode by itself
+    if (!p.active)
         return;
-    }
-    if (!p.r.kh2.empty())
-        ImGui::TextColored(warn, "%s %s", p.r.kh2.c_str(), tr(lang, S::map_kh2_note));
+    if (!p.r.kh2.empty() || !p.r.source.empty())
+        ImGui::TextColored(warn, "%s %s", (p.r.kh2.empty() ? p.r.source : p.r.kh2).c_str(), tr(lang, S::map_kh2_note));
     ImGui::TextUnformatted(
         fmt(lang, S::map_model_file, {p.model_source.empty() ? std::string("-") : u8(p.model_source.filename())})
             .c_str());
 
     if (markers_only(p.r)) {
-        // the game's room as it looks and plays: its markers moved by picking one, its exits' models below
+        // the game's room as it looks and plays: its markers moved by picking one, its gate markers below
         ImGui::PushStyleColor(ImGuiCol_Text, good);
         ImGui::TextWrapped("%s", tr(lang, S::map_markers_only_note));
         ImGui::PopStyleColor();
@@ -3941,6 +4227,17 @@ void draw_map_view(App& app, const Item& item) {
     ImGui::Checkbox(tr(lang, S::map_ceilings), &m.show_ceilings);
     same_line_if_room(check_width(tr(lang, S::map_markers)));
     ImGui::Checkbox(tr(lang, S::map_markers), &m.show_markers);
+    // a sky around the room hides it from outside: drawn only when asked; the view put back over the room's floors
+    bool sky = false;
+    for (const auto& mesh : m.rep.placed.model.meshes)
+        sky = sky || mesh.sky;
+    if (sky && m.rep.active && m.rep.view != 1) {
+        same_line_if_room(check_width(tr(lang, S::map_sky)));
+        ImGui::Checkbox(tr(lang, S::map_sky), &m.show_sky);
+    }
+    same_line_if_room(button_width(tr(lang, S::map_frame)));
+    if (ImGui::Button(tr(lang, S::map_frame)))
+        frame_camera();
     // the bar over the picture: the collision editor's tools, then what is picked
     draw_map_toolbar(app);
     draw_selection_bar(app);
@@ -4013,12 +4310,11 @@ void draw_map_controls(App& app, const Item& item, bool panels) {
         open(app);
     if (m.room == nullptr)
         return;
-    // Undo / Redo of everything the room's change holds (hand edits, markers, exits' models), whatever is
+    // Undo / Redo of everything the room's change holds (hand edits, markers, gate markers), whatever is
     // open, while no field is typed in and nothing is being dragged
     const ImGuiIO& io = ImGui::GetIO();
     if ((m.rep.active || history_can(false) || history_can(true)) && !io.WantTextInput && m.gizmo_drag < 0 &&
-        m.point_drag < 0 &&
-        !ImGui::IsAnyItemActive()) {
+        m.point_drag < 0 && !ImGui::IsAnyItemActive()) {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false))
             history_step(app, io.KeyShift, true);
         else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false))

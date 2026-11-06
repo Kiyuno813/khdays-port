@@ -43,6 +43,7 @@ class Walk:
     mods: str | None = None  # one mod's folder (from the repository's root) it plays with, alone
     window: bool = False  # in a window (a mission's opening dialogs wait for the window's picture)
     marks: tuple[str, ...] = ()  # what each player's session log must say (KHDAYS_LOG on)
+    env: tuple[tuple[str, str], ...] = ()  # its own NAME=VALUE pairs for the game
 
 
 # The routes: the Mission Mode loop, Story Mode, a mission in play, challenge 07, a save (the camp
@@ -104,6 +105,232 @@ WALKS = [
         window=True,
         marks=("stop: recipes 101-103 added after the game's 101", "Stop synthesised\t1"),
     ),
+    # a mod's new mission (port/tests/mods_v2/missions): listed in Twilight Town's Mission Mode list after the
+    # game's (the player's save: a file with the missions open), played on mission 1354's file, cleared when its
+    # clock runs out, its progress written beside the save file the autosave writes (file 99: the chip untouched)
+    Walk(
+        "missions",
+        240,
+        player_save=True,
+        mods="port/tests/mods_v2/missions",
+        window=True,
+        marks=(
+            "missions: test.missions/clock is mission 3595",
+            "with the new missions' rows",
+            "rom: the game opened mi/mi/20000",
+            "the mod's mission\t3595",
+            "mission end\tcleared",
+            "missions: file 99's progress written",
+        ),
+    ),
+    # ... and one the port builds from its description (port/tests/mods_v2/missions_waves): two waves of Shadows
+    # beaten by the attack button, the second's spawner running once the first is defeated, its chest and emblem
+    # rows in the game's tables, cleared when the second wave is; its script's player.set_hp on every frame, refused
+    # while the field loads
+    Walk(
+        "missions_waves",
+        240,
+        player_save=True,
+        mods="port/tests/mods_v2/missions_waves",
+        window=True,
+        marks=(
+            "missions: test.waves/waves is mission 3595",
+            "missions: mi/mi/trbox with the new missions' rows",
+            "missions: mi/mi/evi with the new missions' rows",
+            "the mod's mission\t3595",
+            "missions: test.waves/waves: a spawner made after its region started, running with it",
+            "mission end\tcleared",
+            "set_hp in the field\tnot now",
+            "set_hp in the field\tdone",
+        ),
+    ),
+    # ... and an eliminate mission (port/tests/mods_v2/missions_eliminate): cleared once one of its two Shadows (its
+    # target class) is defeated, the mission gauge's goal, whatever the enemy that does not count; the waves walk's
+    # route
+    Walk(
+        "missions_eliminate",
+        240,
+        player_save=True,
+        mods="port/tests/mods_v2/missions_eliminate",
+        script="missions_waves",
+        window=True,
+        marks=(
+            "missions: test.eliminate/guardian is mission 3595",
+            "the mod's mission\t3595",
+            "mission end\tcleared",
+        ),
+    ),
+    # ... and a hearts mission (port/tests/mods_v2/missions_hearts): cleared once half the hearts its enemies give
+    # are collected, the first of its two enemies that give hearts defeated (a Shadow gives none); the waves walk's
+    # route
+    Walk(
+        "missions_hearts",
+        240,
+        player_save=True,
+        mods="port/tests/mods_v2/missions_hearts",
+        script="missions_waves",
+        window=True,
+        marks=(
+            "missions: test.hearts/hearts is mission 3595",
+            "the mod's mission\t3595",
+            "mission end\tcleared",
+        ),
+    ),
+    # ... an emblems mission (port/tests/mods_v2/missions_emblems): three Organization emblems and no enemy, cleared
+    # once the one where the players start is picked up (10 of its 30 points, the goal); the waves walk's route
+    Walk(
+        "missions_emblems",
+        240,
+        player_save=True,
+        mods="port/tests/mods_v2/missions_emblems",
+        script="missions_waves",
+        window=True,
+        marks=(
+            "missions: test.emblems/emblems is mission 3595",
+            "the mod's mission\t3595",
+            "mission end\tcleared",
+        ),
+    ),
+    # ... and a reach mission (port/tests/mods_v2/missions_reach): no enemy, cleared once the player, walking ahead
+    # (regress_walks/missions_reach.input: the waves walk's route to the field, then Up held), is within its place
+    Walk(
+        "missions_reach",
+        240,
+        player_save=True,
+        mods="port/tests/mods_v2/missions_reach",
+        script="missions_reach",
+        window=True,
+        marks=(
+            "missions: test.reach/reach is mission 3595",
+            "the mod's mission\t3595",
+            "mission end\tcleared",
+        ),
+    ),
+    # ... and a boss among other enemies (port/tests/mods_v2/missions_boss): a Guard Armor, whose code took all six
+    # of the DS's enemy slots, out with Shadows and a Soldier (each class's code at its own place here:
+    # runtime/core/enemy_overlays.h); cleared once a Shadow is defeated; the waves walk's route
+    Walk(
+        "missions_boss",
+        240,
+        player_save=True,
+        mods="port/tests/mods_v2/missions_boss",
+        script="missions_waves",
+        window=True,
+        marks=(
+            "missions: test.boss/boss is mission 3595",
+            "the mod's mission\t3595",
+            "mission end\tcleared",
+        ),
+    ),
+    # ... and a second wave of bosses drawn as several models (port/tests/mods_v2/multiplayer_boss_waves: two each of
+    # Darkside, Dual Blade and Guard Armor once the first wave's Shadow is defeated) played by a host and a guest,
+    # both from the player's save: the host picks the mod's mission (the waves walk's route through the members'
+    # screen) and attacks. Its frames' messages pass the DS's 480 bytes, which the guest's bosses' poses were lost to
+    Walk(
+        "multiplayer_boss_waves",
+        300,
+        player_save=True,
+        players=2,
+        script="multiplayer_boss",
+        mods="port/tests/mods_v2/multiplayer_boss_waves",
+        window=True,
+        marks=("the mod's mission\t3595",),
+    ),
+    # a mod's character (port/tests/mods_v2/character, a made-up figure on three of Roxas's bones): offered after
+    # the game's characters, chosen (KHDAYS_TEST_CHARACTER: the walk has no layout for the port's select),
+    # played on Roxas's code from its own folder ba/ch/c16/, its own model drawn; the mission walk's route
+    Walk(
+        "character",
+        250,
+        player_save=False,
+        mods="port/tests/mods_v2/character",
+        script="mission",
+        env=(("KHDAYS_TEST_CHARACTER", "test.character/block"), ("KHDAYS_TRACE_CHARACTERS", "1")),
+        marks=(
+            "characters: test.character/block, number 0x16, plays as roxas, its folder ba/ch/c16/",
+            "characters: seat 0 is test.character/block",
+            "characters: member 0 is test.character/block (0x16), on roxas's code",
+            "rom: the game opened ba/ch/c16/def",
+            "a mod's character",
+        ),
+    ),
+    # a mod's character with two forms (port/tests/mods_v2/character_forms): with the Zero Gear and three Ability
+    # Units set at the select (its script), the camp chooses its `dual` form, played on the game's dual-wield Roxas
+    # from the form's own folder ba/ch/c100/ (that Roxas's model, animations and moveset under the form's model, its
+    # two weapons drawn as the form's own)
+    Walk(
+        "character_forms",
+        250,
+        player_save=False,
+        mods="port/tests/mods_v2/character_forms",
+        script="mission",
+        env=(("KHDAYS_TEST_CHARACTER", "test.forms/twin"), ("KHDAYS_TRACE_CHARACTERS", "1")),
+        marks=(
+            "characters: test.forms/twin, form dual (0x100) on roxas_dual, priority 10, its folder ba/ch/c100/",
+            "forms deck\ttrue\tunits\t3",
+            "characters: seat 0 takes form dual (0x100) of test.forms/twin, on roxas_dual",
+            "characters: member 0 is test.forms/twin, form dual (0x100), on roxas_dual's code",
+            "rom: the game opened ba/ch/c100/def",
+            "rom: the game opened ba/ch/c100/am",
+            "rom: the game opened ba/ch/c100/cm",
+            "drawn from mods/character_forms/characters/twin/model/twin_dual.gltf, a mod's character",
+            "ro_w13600 drawn from mods/character_forms/characters/twin/weapons/right.gltf, a mod's character",
+            "ro_w14600 drawn from mods/character_forms/characters/twin/weapons/left.gltf, a mod's character",
+        ),
+    ),
+    # ... with two Ability Units (character_forms_two): its rule does not hold, its default form plays on Roxas
+    Walk(
+        "character_forms_two",
+        250,
+        player_save=False,
+        mods="port/tests/mods_v2/character_forms_two",
+        script="mission",
+        env=(("KHDAYS_TEST_CHARACTER", "test.forms/twin"), ("KHDAYS_TRACE_CHARACTERS", "1")),
+        marks=(
+            "forms deck\ttrue\tunits\t2",
+            "characters: seat 0 takes form default (0x16) of test.forms/twin, on roxas",
+            "characters: member 0 is test.forms/twin (0x16), on roxas's code",
+            "rom: the game opened ba/ch/c16/def",
+            "rom: the game opened ba/ch/c16/am",
+            "rom: the game opened ba/ch/c16/cm",
+            "drawn from mods/character_forms_two/characters/twin/model/twin.gltf, a mod's character",
+        ),
+    ),
+    # ... chosen by a guest in a room of two: both copies play its seat as the character (the multiplayer
+    # walk's route), its own model in the game over the give-up leads to
+    Walk(
+        "multiplayer_character",
+        240,
+        player_save=False,
+        players=2,
+        script="multiplayer",
+        mods="port/tests/mods_v2/character",
+        env=(("2:KHDAYS_TEST_CHARACTER", "test.character/block"), ("KHDAYS_TRACE_CHARACTERS", "1")),
+        marks=(
+            "characters: seat 1 is test.character/block",
+            "characters: member 1 is test.character/block (0x16), on roxas's code",
+            "characters: the game over's seat 1 is test.character/block (0x16)",
+        ),
+    ),
+    # ... and on its throne in the mission review the give-up goes on to (KHDAYS_TEST_REVIEW): its own model
+    Walk(
+        "review_character",
+        240,
+        player_save=False,
+        players=2,
+        script="multiplayer",
+        mods="port/tests/mods_v2/character",
+        env=(
+            ("2:KHDAYS_TEST_CHARACTER", "test.character/block"),
+            ("KHDAYS_TEST_REVIEW", "1"),
+            ("KHDAYS_TRACE_CHARACTERS", "1"),
+        ),
+        marks=(
+            "characters: the review's throne 2 is seat 1's, test.character/block (0x16)",
+            "rom: the game opened ba/ch/c16/def.p.z",
+            "ba/ch/c16/def.p.z/mdl/roxas_b drawn from",
+        ),
+    ),
 ]
 
 # The runtime reports the current scene once a second, and at each change,
@@ -131,8 +358,14 @@ def player_saves(work: Path, player: int) -> Path:
     return work / "saves" if player == 1 else work / "saves" / f"player{player}"
 
 
-def make_workdir(save: Path | None, mods: Path | None = None, settings: Path | None = None, player: int = 1) -> Path:
-    """A fresh directory with data/ linked in and, if given, a copy of the save
+def make_workdir(
+    save: Path | None,
+    mods: Path | None = None,
+    settings: Path | None = None,
+    player: int = 1,
+    data: Path = ROOT / "data",
+) -> Path:
+    """A fresh directory with data/ (`data`) linked in and, if given, a copy of the save
     (where player `player` keeps it), the mods folder linked in as mods/ and a
     copy of a settings file as saves/settings.ini (screens = one for the
     one-screen walks)."""
@@ -140,7 +373,7 @@ def make_workdir(save: Path | None, mods: Path | None = None, settings: Path | N
     link = work / "data"
     # A junction, not a copy: data/ is gigabytes. `mklink /J` needs no
     # administrator rights.
-    subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(ROOT / "data")], check=True, capture_output=True)
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(data.resolve())], check=True, capture_output=True)
     if mods is not None and (mods / "mod.ini").exists():
         # one mod's own folder: alone in a mods/ of the run's
         (work / "mods").mkdir()
@@ -334,10 +567,11 @@ def run_walks(args: argparse.Namespace) -> int:
             players = []
             mods = ROOT / walk.mods if walk.mods is not None else args.mods
             for player, (name, script_name) in enumerate(zip(names, scripts), start=1):
-                works.append(make_workdir(save, mods, args.settings, player))
+                works.append(make_workdir(save, mods, args.settings, player, args.data))
                 script = (WALKS_DIR / f"{script_name}.input").read_text(encoding="utf-8").strip()
                 players.append((works[-1], script, works[-1] / "game.log"))
             env = extra_env_of(args)
+            env.update(dict(walk.env))
             if walk.marks:
                 env["KHDAYS_LOG"] = "1"
             if walk.server is not None:
@@ -397,7 +631,11 @@ def run_walks(args: argparse.Namespace) -> int:
     if args.record:
         merged = read_expected()
         merged.update(results)
-        lines = ["# The scene sequence each regression walk must produce (port/tools/regress.py)."]
+        # the file's comments kept (the record of when each walk was added)
+        old = EXPECTED.read_text(encoding="utf-8").splitlines() if EXPECTED.exists() else []
+        lines = [line for line in old if line.startswith("#")] or [
+            "# The scene sequence each regression walk must produce (port/tools/regress.py)."
+        ]
         lines += [f"{w.name}: {' '.join(merged[w.name])}" for w in WALKS if w.name in merged]
         EXPECTED.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
         print(f"recorded {EXPECTED.relative_to(ROOT)}")
@@ -433,7 +671,7 @@ def extra_env_of(args: argparse.Namespace) -> dict[str, str]:
 def run_script(args: argparse.Namespace) -> int:
     script = " ".join(args.input.read_text(encoding="utf-8").split())
     extra_env = extra_env_of(args)
-    work = make_workdir(args.save, args.mods, args.settings)
+    work = make_workdir(args.save, args.mods, args.settings, data=args.data)
     try:
         exit_code = run_game(args.exe, work, script, extra_env, args.timeout, args.log, args.window)
         keep_session_log(work, args.log.with_suffix(".session.log"))
@@ -459,6 +697,9 @@ def main() -> int:
         nargs="?",
         default=DEFAULT_EXE,
         help=f"the khdays-native.exe to run (default: {DEFAULT_EXE.relative_to(ROOT)})",
+    )
+    parser.add_argument(
+        "--data", type=Path, default=ROOT / "data", help="the data folder to play from (another extraction's)"
     )
     walks = parser.add_argument_group("regression walks")
     walks.add_argument("--walk-save", type=Path, help="the save the mission, story and play walks start from")

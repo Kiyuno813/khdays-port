@@ -130,7 +130,7 @@ Written by `tools/hd/theater_mission.py`, in the theater's pieces; drawn by
 
 | Line | What it is |
 |---|---|
-| `grid COLUMNS GAP` | the grid's columns and the tiles' gap (from place `tile`) |
+| `grid COLUMNS GAP ROWS` | the grid's columns, the tiles' gap (from place `tile`) and a page's rows; without ROWS (layouts made before the pages) the rows that fit above the places' plates |
 | `stats PITCH` | the gauges' rows' pitch (from place `stat`) |
 | `gauge_pitch PITCH` | a gauge's bars' pitch (from place `gauge`) |
 | `gauge_colour R G B` | the bars' colours, left to right (the game's) |
@@ -147,6 +147,18 @@ grid ends with a random choice, a "?" with the player's Y in its corner: A on it
 line then says "Y Random" with the game's own Y, 0x334d in `text/font_eu_10.nftr`,
 which its text never writes) moves to a character nobody is on, at random, and
 chooses it.
+
+When the characters and the random choice do not fit a page (`grid`'s COLUMNS x
+ROWS: the game's 19 and the random choice fill four rows of five, so a mod's
+characters past the first make more), the grid is paged
+(`runtime/menus/select_pages.c`): the page shown is the one the cursor is on, L and
+R turn it to the same place on the next or previous page (its last character when
+the page is shorter), the directions cross pages (down from a page's last row onto
+the next page's first, left and right along the whole order), and `text page`
+(else the places' circles' style under the grid) says "2 / 3". The random choice
+stays last, on the last page, and draws from every page. The places' plates show
+every place's character whatever page is shown. With everything on one page the
+screen is as it always was.
 
 ## The settings menu (`layouts/settings/<lang>/settings.txt`)
 
@@ -198,7 +210,7 @@ over the HD video by `host/movies/movie_subtitles.c`.
 | `picture W H` | the picture the places are in (1920 x 1080) |
 | `rate R` | the frames counted a second (the theater's videos: 30) |
 | `atlas FILE` | the lines' pixels, beside this file |
-| `line FIRST END X Y U V W H` | a line: shown from frame FIRST to before END, at X, Y of the picture, from the atlas's U, V, W x H |
+| `line FIRST END X Y U V W H [IN OUT]` | a line: shown from frame FIRST to before END, at X, Y of the picture, from the atlas's U, V, W x H; an animated line's IN and OUT, the frames it takes to come and to go |
 
 A frame of the schedule is a picture of the theater's video: a video at that
 rate, or at 30000/1001 (the same pictures, slower), counts its own pictures;
@@ -219,6 +231,15 @@ the states as the port does. The installer runs them for the HD pack. Where the
 words are the game's, they are read from the game; the places, sizes and colours
 not in the collections' layouts were measured on the maintainer's captures or
 are the maintainer's choices from mock-ups.
+
+The native KH2 gauge is made by `kh2_gauge.py KH2_FIFTH` (default mod: `HD PACK`).
+Its input is the existing archive reader's `kh2_fifth.hed_out`, with `original/`
+and `remastered/`. The installer extracts its five localized field archives,
+creates the adjusted `.2dd` and combined player/party `gauge.json`, and copies the remastered atlas into
+`layouts/gauge/<lang>/`. `--settings` names an existing gauge folder whose custom
+animation and position settings should survive rebuilding, including migration of
+an older `party.json`. The gauges are rendered
+as native animated sequences; see [KH2 sequences](KH2_SEQUENCES.md).
 
 The theater's layouts are L2D files. Their structures are those OpenKh documents
 for Birth by Sleep (openkh.dev/bbs/file/type/l2d.html); this version (0500)
@@ -423,4 +444,11 @@ size and places were measured on window captures of the theater playing its
 videos with subtitles (hd818's two lines, the 1998 x 1125 pictures scaled to
 1920 x 1080): the font's 32-texel cells drawn 1.445 times their size, a space
 13.75 texels, each glyph advancing its width in the `.cod`; the lines 51 apart,
-the last one's top at 956, the block centred on 964.
+the last one's top at 956, the block centred on 964. A video may also have a
+`SCHEDULE_TEXT_ANIM` per language, `DATA FrameStart FrameEnd TextID InFrame
+OutFrame`: a voice over the scene (in Days's videos only Xion's, two lines in
+hd837 and six in hd840; Re:coded's hd530, 538, 547, 559, 562 and 570 have them
+too), coming over InFrame frames and going over OutFrame. Their texts end with
+empty rows, which set them higher in the same block (one row at 599, a pitch
+above for each row more), and the tool keeps those rows; before 2026-11-04 it
+read only the `SCHEDULE_TEXT_MOVIE` and left those lines out.

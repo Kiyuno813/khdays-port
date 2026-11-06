@@ -47,7 +47,7 @@ struct Sheet {
 
 struct FileNames {
     std::string label; // "<path>" or "<path>#<entry>"
-    std::vector<Named> textures, palettes, models;
+    std::vector<Named> textures, palettes, models, animations;
     std::vector<Sheet> sheets;
     std::vector<u8> data; // kept when it has sheets: their tiles' bytes
 };
@@ -207,13 +207,46 @@ void number_repeats(std::vector<Named> &list)
 void read_models(const std::vector<u8> &d, std::size_t start, FileNames &names)
 {
     const u32 sections = le16(d, start + 0xe);
-    for (u32 s = 0; s < sections && s < 8; ++s) {
+    for (u32 s = 0; s < sections && start + 0x14 + 4 * s <= d.size(); ++s) {
         const std::size_t mdl0 = start + le32(d, start + 0x10 + 4 * s);
         if (mdl0 + 0x10 > d.size() || std::memcmp(&d[mdl0], "MDL0", 4) != 0)
             continue;
         const Dict models = read_dict(d, mdl0 + 8);
         for (std::size_t m = 0; m < models.names.size(); ++m) {
             names.models.push_back({static_cast<u32>(mdl0 + le32(d, models.entries[m])), 0, models.names[m]});
+        }
+    }
+}
+
+// The joint animations of the BCA0 at `start` (its JNT0's dictionary): where each one's data starts.
+void read_animations(const std::vector<u8> &d, std::size_t start, FileNames &names)
+{
+    const u32 sections = le16(d, start + 0xe);
+    for (u32 s = 0; s < sections && start + 0x14 + 4 * s <= d.size(); ++s) {
+        const std::size_t jnt0 = start + le32(d, start + 0x10 + 4 * s);
+        if (jnt0 + 0x10 > d.size() || std::memcmp(&d[jnt0], "JNT0", 4) != 0)
+            continue;
+        const Dict animations = read_dict(d, jnt0 + 8);
+        for (std::size_t a = 0; a < animations.names.size(); ++a) {
+            names.animations.push_back(
+                {static_cast<u32>(jnt0 + le32(d, animations.entries[a])), 0, animations.names[a]});
+        }
+    }
+}
+
+// The texture pattern animations of the BTP0 at `start` (its PAT0's dictionary, entry offsets from the
+// PAT0, where NNS_G3dGetAnmByIdx points an animation object's resAnm): with the joint animations, by name.
+void read_pattern_animations(const std::vector<u8> &d, std::size_t start, FileNames &names)
+{
+    const u32 sections = le16(d, start + 0xe);
+    for (u32 s = 0; s < sections && start + 0x14 + 4 * s <= d.size(); ++s) {
+        const std::size_t pat0 = start + le32(d, start + 0x10 + 4 * s);
+        if (pat0 + 0x10 > d.size() || std::memcmp(&d[pat0], "PAT0", 4) != 0)
+            continue;
+        const Dict animations = read_dict(d, pat0 + 8);
+        for (std::size_t a = 0; a < animations.names.size(); ++a) {
+            names.animations.push_back(
+                {static_cast<u32>(pat0 + le32(d, animations.entries[a])), 0, animations.names[a]});
         }
     }
 }
@@ -252,6 +285,10 @@ const FileNames &names_of(const std::string &file)
             read_tex0(d, at, names);
             if (d[at + 1] == 'M')
                 read_models(d, at, names);
+        } else if (std::memcmp(&d[at], "BCA0", 4) == 0 && le32(d, at + 8) <= d.size() - at) {
+            read_animations(d, at, names);
+        } else if (std::memcmp(&d[at], "BTP0", 4) == 0 && le32(d, at + 8) <= d.size() - at) {
+            read_pattern_animations(d, at, names);
         } else if (std::memcmp(&d[at], "RGCN", 4) == 0 && le32(d, at + 8) <= d.size() - at) {
             read_sheet(d, at, names);
         }
@@ -277,7 +314,7 @@ std::map<std::string, std::set<std::string>> pairs;
 void read_pairs(const std::vector<u8> &d, std::size_t bmd0)
 {
     const u32 sections = le16(d, bmd0 + 0xe);
-    for (u32 s = 0; s < sections && s < 8; ++s) {
+    for (u32 s = 0; s < sections && bmd0 + 0x14 + 4 * s <= d.size(); ++s) {
         const std::size_t mdl0 = bmd0 + le32(d, bmd0 + 0x10 + 4 * s);
         if (mdl0 + 0x10 > d.size() || std::memcmp(&d[mdl0], "MDL0", 4) != 0)
             continue;
@@ -321,7 +358,7 @@ void read_pairs(const std::vector<u8> &d, std::size_t bmd0)
 void read_pattern_pairs(const std::vector<u8> &d, std::size_t btp0)
 {
     const u32 sections = le16(d, btp0 + 0xe);
-    for (u32 s = 0; s < sections && s < 8; ++s) {
+    for (u32 s = 0; s < sections && btp0 + 0x14 + 4 * s <= d.size(); ++s) {
         const std::size_t pat0 = btp0 + le32(d, btp0 + 0x10 + 4 * s);
         if (pat0 + 0x10 > d.size() || std::memcmp(&d[pat0], "PAT0", 4) != 0)
             continue;
@@ -420,7 +457,7 @@ int dump_models(const std::vector<u8> &d, std::size_t at, const FileNames &names
     int written = 0;
     const u32 size = le32(d, at + 8);
     const u32 sections = le16(d, at + 0xe);
-    for (u32 s = 0; s < sections && s < 8; ++s) {
+    for (u32 s = 0; s < sections && at + 0x14 + 4 * s <= d.size(); ++s) {
         const std::size_t mdl0 = at + le32(d, at + 0x10 + 4 * s);
         if (mdl0 + 0x10 > d.size() || std::memcmp(&d[mdl0], "MDL0", 4) != 0)
             continue;
@@ -785,6 +822,20 @@ extern "C" int khdays_names_model(const char *file, u32 offset, char *out, int s
         if (name.size() + 1 > static_cast<std::size_t>(size))
             return 0;
         std::memcpy(out, name.c_str(), name.size() + 1);
+        return 1;
+    }
+    return 0;
+}
+
+extern "C" int khdays_names_animation(const char *file, u32 offset, char *out, int size)
+{
+    const FileNames &names = names_of(file);
+    for (const auto &a : names.animations) {
+        if (a.offset != offset)
+            continue;
+        if (a.name.size() + 1 > static_cast<std::size_t>(size))
+            return 0;
+        std::memcpy(out, a.name.c_str(), a.name.size() + 1);
         return 1;
     }
     return 0;

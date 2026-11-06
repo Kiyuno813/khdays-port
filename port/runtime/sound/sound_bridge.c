@@ -238,10 +238,42 @@ static int sequence_category[16] = {
     KHDAYS_SOUND_EFFECTS, KHDAYS_SOUND_EFFECTS, KHDAYS_SOUND_EFFECTS, KHDAYS_SOUND_EFFECTS,
     KHDAYS_SOUND_EFFECTS, KHDAYS_SOUND_EFFECTS, KHDAYS_SOUND_EFFECTS, KHDAYS_SOUND_EFFECTS};
 static int stream_category[4] = {KHDAYS_SOUND_MUSIC, KHDAYS_SOUND_MUSIC, KHDAYS_SOUND_MUSIC, KHDAYS_SOUND_MUSIC};
-static int channel_category[16];
-static int channel_replaced[16]; /* a mod's file plays instead (sound_mods.c): this channel is silenced */
-static u32 channel_starts[16];
-static float channel_gain[16];
+/* Each channel's (the voices' too: as many as the channels, channel_room), grown with them. */
+static int *channel_category;
+static int *channel_replaced; /* a mod's file plays instead (sound_mods.c): this channel is silenced */
+static u32 *channel_starts;
+static float *channel_gain;
+static int channel_room;
+
+/* The channels' arrays for every channel there is; 0 when they cannot grow (the voices then unheard). */
+static int channels_for(int count)
+{
+    if (count > channel_room) {
+        const int room = count * 2;
+        int *category = (int *)realloc(channel_category, sizeof(int) * (size_t)room);
+        int *replaced = category != NULL ? (int *)realloc(channel_replaced, sizeof(int) * (size_t)room) : NULL;
+        u32 *starts = replaced != NULL ? (u32 *)realloc(channel_starts, sizeof(u32) * (size_t)room) : NULL;
+        float *gain = starts != NULL ? (float *)realloc(channel_gain, sizeof(float) * (size_t)room) : NULL;
+        if (category != NULL)
+            channel_category = category;
+        if (replaced != NULL)
+            channel_replaced = replaced;
+        if (starts != NULL)
+            channel_starts = starts;
+        if (gain == NULL) {
+            return 0;
+        }
+        channel_gain = gain;
+        for (int n = channel_room; n < room; ++n) {
+            channel_category[n] = KHDAYS_SOUND_MUSIC;
+            channel_replaced[n] = 0;
+            channel_starts[n] = 0;
+            channel_gain[n] = 0.0f;
+        }
+        channel_room = room;
+    }
+    return 1;
+}
 static float player_gain[16], stream_gain[4];
 
 static int delay_on(void);
@@ -252,6 +284,68 @@ static LARGE_INTEGER sequence_requested_at; /* when StartSeq was entered (KHDAYS
 static char sequence_playing[16][96];       /* each ARM7 player's sequence name, for the log's "stopped" lines */
 static const char *const category_names[KHDAYS_SOUND_CATEGORIES] = {"music", "effects", "voices", "movies"};
 static volatile LONG movie_channels; /* khdays_sound_movie_channels */
+/* khdays_sound_bridge_hold_new_music: whether held, and the sequence players and stream players (bits)
+ * whose music began meanwhile, not heard */
+static volatile LONG music_held, held_players, held_streams;
+/* khdays_sound_bridge_walk_steps: whether the walk has the footsteps, the players whose footstep the game
+ * started meanwhile (not heard), how many footsteps the walk itself asks for (heard), and the last
+ * footstep the game asked for (under `lock`) */
+static volatile LONG walk_steps, walk_players, walk_expected;
+static char footstep_archive[64], footstep_entry[64];
+
+void khdays_sound_bridge_walk_steps(int owns)
+{
+    if (InterlockedExchange(&walk_steps, owns != 0) != (owns != 0) && !owns) {
+        InterlockedExchange(&walk_players, 0);
+    }
+}
+
+int khdays_sound_bridge_footstep(char *out_archive, int out_archive_size, char *out_entry, int out_entry_size)
+{
+    int known;
+    AcquireSRWLockExclusive(&lock);
+    known = footstep_archive[0] != '\0';
+    snprintf(out_archive, (size_t)out_archive_size, "%s", footstep_archive);
+    snprintf(out_entry, (size_t)out_entry_size, "%s", footstep_entry);
+    ReleaseSRWLockExclusive(&lock);
+    return known;
+}
+
+void khdays_sound_bridge_expect_footstep(void)
+{
+    InterlockedIncrement(&walk_expected);
+}
+
+/* A footstep's identifier ("seqarc/FIELD_13FS_STONE/se_13fs_stone_run01", "seqarc/FIELD_ROX_FS_..."): the
+ * archive's name has "FS_" after "FIELD_". Its archive and entry are copied out when it is one. */
+static int footstep_of(const char *identifier, char *fs_archive, int fs_archive_size, char *fs_entry, int fs_entry_size)
+{
+    const char *slash;
+    if (strncmp(identifier, "seqarc/FIELD_", 13) != 0) {
+        return 0;
+    }
+    slash = strchr(identifier + 7, '/');
+    if (slash == NULL || (int)(slash - (identifier + 7)) >= fs_archive_size ||
+        (int)strlen(slash + 1) >= fs_entry_size) {
+        return 0;
+    }
+    memcpy(fs_archive, identifier + 7, (size_t)(slash - (identifier + 7)));
+    fs_archive[slash - (identifier + 7)] = '\0';
+    if (strstr(fs_archive, "FS_") == NULL) {
+        return 0;
+    }
+    snprintf(fs_entry, (size_t)fs_entry_size, "%s", slash + 1);
+    return 1;
+}
+
+void khdays_sound_bridge_hold_new_music(int hold)
+{
+    InterlockedExchange(&music_held, hold != 0);
+    if (!hold) {
+        InterlockedExchange(&held_players, 0);
+        InterlockedExchange(&held_streams, 0);
+    }
+}
 
 void khdays_sound_sequence_requested(void)
 {
@@ -284,6 +378,30 @@ void khdays_sound_sequence_started(int arm7_player, int kind, int number, int en
         } else {
             khdays_log("sound: %s starts on player %d (%s)", identifier, arm7_player,
                        category_names[sequence_category[arm7_player]]);
+        }
+    }
+    if (music_held && arm7_player >= 0 && arm7_player < 16 && sequence_category[arm7_player] == KHDAYS_SOUND_MUSIC) {
+        InterlockedOr(&held_players, 1 << arm7_player);
+        khdays_log("sound: %s not heard: a scene's HD videos come", identifier);
+    }
+    if (arm7_player >= 0 && arm7_player < 16) {
+        char fs_archive[64], fs_entry[64];
+        InterlockedAnd(&walk_players, ~(1 << arm7_player));
+        if (footstep_of(identifier, fs_archive, sizeof(fs_archive), fs_entry, sizeof(fs_entry))) {
+            AcquireSRWLockExclusive(&lock);
+            snprintf(footstep_archive, sizeof(footstep_archive), "%s", fs_archive);
+            snprintf(footstep_entry, sizeof(footstep_entry), "%s", fs_entry);
+            ReleaseSRWLockExclusive(&lock);
+            if (InterlockedCompareExchange(&walk_expected, 0, 0) > 0) {
+                InterlockedDecrement(&walk_expected); /* the walk's own, heard */
+            } else if (walk_steps) {
+                static int told;
+                InterlockedOr(&walk_players, 1 << arm7_player);
+                if (!told) {
+                    told = 1;
+                    khdays_log("sound: %s not heard: the walk plays the footsteps at its own feet", identifier);
+                }
+            }
         }
     }
     if (driver == NULL || (!hw.trace && !khdays_sound_mods_present())) {
@@ -325,32 +443,37 @@ void khdays_sound_player_assigned(int arm7_player, int archive_player)
 static void update_gains(void)
 {
     static int told;
+    const LONG players_held = held_players | InterlockedCompareExchange(&walk_players, 0, 0),
+               streams_held = held_streams;
     for (int p = 0; p < 16; ++p) {
-        player_gain[p] = bus.category[sequence_category[p]];
+        player_gain[p] = (players_held >> p & 1) ? 0.0f : bus.category[sequence_category[p]];
     }
     for (int s = 0; s < 4; ++s) {
-        stream_gain[s] = bus.category[stream_category[s]];
+        stream_gain[s] = (streams_held >> s & 1) ? 0.0f : bus.category[stream_category[s]];
     }
-    for (int n = 0; n < 16; ++n) {
-        const KhdaysSoundChannel *c = &hw.channels[n];
+    if (!channels_for(khdays_sound_hw_count(&hw))) {
+        return;
+    }
+    for (int n = 0; n < khdays_sound_hw_count(&hw); ++n) {
+        const KhdaysSoundChannel *c = khdays_sound_hw_channel_of(&hw, n);
         int category = channel_category[n];
         int replaced = channel_replaced[n];
         if (c->source >= 0 && !(c->source & KHDAYS_WAVE_HANDLE)) {
             const int s = khdays_streams_handle_player(c->source);
             category = stream_category[s];
-            replaced = khdays_sound_mods_replaces_stream(s);
+            replaced = khdays_sound_mods_replaces_stream(s) || (streams_held >> s & 1);
         } else {
             const int player = driver->channel_player != NULL ? driver->channel_player(n) : -1;
             if (player >= 0) {
                 category = sequence_category[player];
-                replaced = khdays_sound_mods_replaces_player(player);
-            } else if (movie_channels & 1 << n) {
+                replaced = khdays_sound_mods_replaces_player(player) || (players_held >> player & 1);
+            } else if (n < 16 && (movie_channels & 1 << n)) {
                 category = KHDAYS_SOUND_MOVIES;      /* a movie's sound: one of the channels its player locked */
                 replaced = khdays_video_mod_sound(); /* a mod's movie plays its own sound instead */
             } else if (c->starts != channel_starts[n]) {
                 category = KHDAYS_SOUND_EFFECTS;
                 replaced = 0;
-                if (!(told & 1 << n)) {
+                if (n < 16 && !(told & 1 << n)) { /* (a voice's notes are always a sequence's) */
                     told |= 1 << n;
                     fprintf(stderr,
                             "sound: channel %d plays a sound no sequence or stream started (the game set "
@@ -406,11 +529,12 @@ static void run(void *context, u64 cycle)
         const u32 cycles = cycles_to_next_sample();
         const int movie = khdays_video_mod_sound(); /* a mod's movie's sound (video_mod.h) */
         const int mods = khdays_sound_mods_present() || movie;
-        const int unity = khdays_sound_bus_unity(&bus) && !mods;
+        const int unity = khdays_sound_bus_unity(&bus) && !mods && !(held_players | held_streams);
         float extra[2] = {0.0f, 0.0f};
-        hw.smooth = output_pc; /* the PC's output reads the channels between their samples */
+        hw.smooth = output_pc;       /* the PC's output reads the channels between their samples */
+        hw.allow_voices = output_pc; /* and plays the voices past the sixteen (snd7_channel_alloc_wave) */
         khdays_sound_hw_step(&hw, cycles);
-        if (!unity && (frame_count & 63) == 0) {
+        if (!unity && ((frame_count & 63) == 0 || khdays_sound_hw_count(&hw) > channel_room)) {
             update_gains(); /* what a channel plays changes when its notes start: check every 64 samples */
         }
         if (mods && khdays_sound_mods_present()) {
@@ -422,8 +546,8 @@ static void run(void *context, u64 cycle)
             khdays_video_mod_mix(output_rate, bus.category[KHDAYS_SOUND_MOVIES], extra);
         }
         if (output_pc) {
-            khdays_sound_mix_pc(&hw, unity ? NULL : channel_gain, bus.volume, mods ? extra : NULL, &limiter,
-                                &pc_frames[2 * frame_count]);
+            khdays_sound_mix_pc(&hw, unity || khdays_sound_hw_count(&hw) > channel_room ? NULL : channel_gain,
+                                bus.volume, mods ? extra : NULL, &limiter, &pc_frames[2 * frame_count]);
         } else {
             int16_t *out = &frames[2 * frame_count];
             khdays_sound_mix_ds(&hw, unity ? NULL : channel_gain, bus.volume, out);
@@ -718,6 +842,10 @@ void khdays_sound_stream_prepared(int player, int stream_number, int channels, c
                                          blocks != 0 ? (blocks - 1) * block_samples + *(const u32 *)(h + 0x3c) : 0};
         AcquireSRWLockExclusive(&lock);
         stream_category[player] = category;
+        if (music_held && category == KHDAYS_SOUND_MUSIC) {
+            InterlockedOr(&held_streams, 1 << player);
+            khdays_log("sound: stream %d not heard: a scene's HD videos come", stream_number);
+        }
         if (khdays_sound_mods_present()) {
             khdays_sound_mods_stream(a, player, stream_number, start_sample, loop.rate, &loop, block_samples);
         }
@@ -944,12 +1072,17 @@ int khdays_sound_bridge_word(u32 data, u32 err)
         return 0;
     }
     count_commands(data);
-    if (khdays_log_on() && data != 0) {
+    if (data != 0 && (khdays_log_on() || InterlockedCompareExchange(&walk_players, 0, 0) != 0)) {
         for (u32 command = data; command != 0; command = *(volatile u32 *)KHDAYS_W(command)) {
             if (*(volatile u32 *)KHDAYS_W(command + 4) == 1) {
                 const u32 p = *(volatile u32 *)KHDAYS_W(command + 8);
-                khdays_log("sound: player %u stopped (%s)", p,
-                           p < 16 && sequence_playing[p][0] ? sequence_playing[p] : "?");
+                if (p < 16) {
+                    InterlockedAnd(&walk_players, ~(1 << p)); /* a footstep not heard is over */
+                }
+                if (khdays_log_on()) {
+                    khdays_log("sound: player %u stopped (%s)", p,
+                               p < 16 && sequence_playing[p][0] ? sequence_playing[p] : "?");
+                }
             }
         }
     }

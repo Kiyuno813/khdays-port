@@ -1,13 +1,19 @@
 /* Engine A's screen at N x, drawn by the graphics card (gpu_raster3d.h): each frame uploads the
- * polygons, a per-tile index of them, the composition records and the changed texture pages;
- * raster3d.hlsl draws the 3D, compose.hlsl makes the screen. In widescreen the HUD's polygons move to
- * the sides as the 2D's pieces do (docs/RENDERING.md, "On the graphics card"). */
+ * polygons, the composition records and the changed texture pages; the card's own rasterizer draws the
+ * 3D (gpu_native3d.c), raster3d.hlsl the native sequences after it (or all of it, KHDAYS_3D=compute,
+ * from a per-tile index of the polygons), compose.hlsl makes the screen. In widescreen the HUD's polygons
+ * move to the sides as the 2D's pieces do (docs/RENDERING.md, "On the graphics card"). */
 #include "gpu_raster3d.h"
 #include "gpu_hd.h"
+#include "../../gfx/character_shadow.h"
+#include "generated/shadow_mask_cs.h"
+#include "generated/shadow_blur_cs.h"
+#include "gpu_native3d.h"
 #include "../../runtime/display/frame_package.h"
 #include "../../runtime/mods/textures.h"
 #include "../../ui/composition.h"
 #include "generated/compose_cs.h"
+#include "generated/fxaa3d_cs.h"
 #include "generated/raster3d_cs.h"
 
 #include <math.h>
@@ -31,8 +37,14 @@ typedef struct RasterParams {
     uint32_t clear_color, clear_depth, smooth;
     int32_t origin_x;
     uint32_t fine, npolys, nverts, entries; /* how much was uploaded: the shader stays within it */
+    uint32_t resume;                        /* start from the targets (the native 3D drew before) */
+    uint32_t unused0, unused1, unused2;
     uint32_t toon[16];
 } RasterParams;
+
+typedef struct FxaaParams {
+    uint32_t width, height, fine, unused;
+} FxaaParams;
 
 typedef struct ComposeParams {
     uint32_t scale, width, height, disp3dcnt, swap_params, clear_color, clear_depth, fog_color;
@@ -47,10 +59,29 @@ typedef struct ComposeParams {
 } ComposeParams;
 
 static SDL_GPUDevice *device;
+static SDL_GPUComputePipeline *shadow_raster, *shadow_blur;
+static SDL_GPUBuffer *shadow_raw, *shadow_soft, *shadow_tiles;
+static SDL_GPUTransferBuffer *shadow_upload;
+static uint32_t shadow_tile_capacity;
+static uint32_t *shadow_index;
+static uint32_t shadow_index_capacity;
+static uint32_t shadow_masks;            /* the masks shadow_raw and shadow_soft hold, grown to the most a list has had */
+static uint32_t *shadow_counts;          /* prepare_shadows' entries per tile of each mask, then where each goes */
+static uint32_t shadow_cells_capacity;
+static int shadows_off;                  /* their pipelines could not be made: the native shadows stay */
+static int shadows_ready; /* this list's mask can be drawn; if not, its native shadows stay and no receiver is drawn */
+static uint32_t shadow_groups, shadow_bytes, shadow_entries; /* prepare_shadows' for draw_shadows */
+
 static SDL_GPUComputePipeline *raster, *compose;
-static SDL_GPUBuffer *polys, *verts, *tiles, *vram, *records;
+static SDL_GPUComputePipeline *fxaa; /* the antialiasing's pass (fxaa3d.hlsl); NULL: the card could not make it */
+static SDL_GPUTexture *fxaa_out;     /* its output, as large as the colour target */
+static int fxaa_width, fxaa_height;
+static int fxaa_on; /* khdays_raster3d_set_fxaa */
+static SDL_GPUBuffer *polys, *verts, *tiles, *vram, *records, *sequences;
 static uint32_t polys_capacity, verts_capacity; /* entries in `polys` and `verts`: the most any list has had */
 static int fine;                                /* draw the 3D in 8 bits per channel (khdays_raster3d_set_fine) */
+static int native;                              /* the card's rasterizer draws the 3D (gpu_native3d.c) */
+static int native_ready;                        /* gpu_native3d.c is open */
 static uint32_t tiles_capacity;                 /* entries in `tiles` */
 static SDL_GPUTransferBuffer *upload;
 static uint32_t upload_size;
@@ -61,6 +92,15 @@ static SDL_GPUTextureUsageFlags target_usage;
 static int target_scale, target_columns;
 static SDL_Texture *wrapped;
 static SDL_Renderer *wrapped_for;
+/* The HUD apart (khdays_raster3d_set_hud_apart): the other size's targets kept aside, which is drawing now, and
+ * the HUD's picture of this frame (among the two sizes' targets while it is valid). */
+static SDL_GPUTexture *spare_color3d, *spare_attr3d, *spare_screen;
+static int spare_scale, spare_columns;
+static SDL_Texture *spare_wrapped;
+static SDL_Renderer *spare_wrapped_for;
+static int hud_apart, drawing_hud;
+static SDL_GPUTexture *hud_color3d, *hud_attr3d;
+static int hud_columns;
 static uint32_t *tile_list;
 static uint32_t tile_list_capacity;
 /* Work space that grows with the lists: the vertices with the HUD moved, the
@@ -110,7 +150,7 @@ static int scratch_for(const KhdaysG3dList *list)
 static SDL_GPUComputePipeline *make_pipeline(const unsigned char *dxil, unsigned dxil_size, const unsigned char *spirv,
                                              unsigned spirv_size, const unsigned char *msl, unsigned msl_size,
                                              const char *entry, Uint32 ro_textures, Uint32 ro_buffers,
-                                             Uint32 rw_textures)
+                                             Uint32 rw_textures, Uint32 rw_buffers)
 {
     SDL_GPUComputePipelineCreateInfo info;
     const SDL_GPUShaderFormat formats = SDL_GetGPUShaderFormats(device);
@@ -136,6 +176,7 @@ static SDL_GPUComputePipeline *make_pipeline(const unsigned char *dxil, unsigned
     info.num_readonly_storage_buffers = ro_buffers;
     info.num_readwrite_storage_textures = rw_textures;
     info.num_uniform_buffers = 1;
+    info.num_readwrite_storage_buffers = rw_buffers;
     info.threadcount_x = 8;
     info.threadcount_y = 8;
     info.threadcount_z = 1;
@@ -146,24 +187,72 @@ static SDL_GPUBuffer *make_buffer(Uint32 size)
 {
     SDL_GPUBufferCreateInfo info;
     SDL_zero(info);
-    info.usage = SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ;
+    info.usage = SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ | SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
     info.size = size;
     return SDL_CreateGPUBuffer(device, &info);
+}
+
+/* Room for `n` shadow masks (KHDAYS_SHADOW_SIZE squared, 4 bytes a texel) in shadow_raw and shadow_soft, grown as a
+ * list has more casters: the new ones made before the old go, so the raster always has a mask to bind. 0: no memory
+ * for them (this list's casters keep their native shadows). */
+static int shadow_masks_for(uint32_t n)
+{
+    if (n <= shadow_masks && shadow_soft != NULL)
+        return 1;
+    uint32_t want = shadow_masks ? shadow_masks : 1;
+    while (want < n)
+        want *= 2;
+    const uint64_t bytes = (uint64_t)want * KHDAYS_SHADOW_SIZE * KHDAYS_SHADOW_SIZE * 4u;
+    if (bytes > UINT32_MAX) {
+        SDL_SetError("%u character shadows' masks do not fit one buffer", n);
+        return 0;
+    }
+    SDL_GPUBufferCreateInfo info = {0};
+    info.usage = SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ | SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_WRITE;
+    info.size = (Uint32)bytes;
+    SDL_GPUBuffer *raw = SDL_CreateGPUBuffer(device, &info);
+    SDL_GPUBuffer *soft = raw != NULL ? SDL_CreateGPUBuffer(device, &info) : NULL;
+    if (raw == NULL || soft == NULL) {
+        if (raw != NULL)
+            SDL_ReleaseGPUBuffer(device, raw);
+        return 0;
+    }
+    if (shadow_raw != NULL)
+        SDL_ReleaseGPUBuffer(device, shadow_raw);
+    if (shadow_soft != NULL)
+        SDL_ReleaseGPUBuffer(device, shadow_soft);
+    shadow_raw = raw;
+    shadow_soft = soft;
+    shadow_masks = want;
+    return 1;
 }
 
 int khdays_raster3d_open(SDL_GPUDevice *d)
 {
     device = d;
     raster = make_pipeline(raster3d_cs_dxil, raster3d_cs_dxil_size, raster3d_cs_spirv, raster3d_cs_spirv_size,
-                           raster3d_cs_msl, raster3d_cs_msl_size, RASTER3D_CS_ENTRY, 0, 5, 2);
+                           raster3d_cs_msl, raster3d_cs_msl_size, RASTER3D_CS_ENTRY, 0, 7, 2, 0);
     compose = make_pipeline(compose_cs_dxil, compose_cs_dxil_size, compose_cs_spirv, compose_cs_spirv_size,
-                            compose_cs_msl, compose_cs_msl_size, COMPOSE_CS_ENTRY, 0, 1, 3);
+                            compose_cs_msl, compose_cs_msl_size, COMPOSE_CS_ENTRY, 0, 1, 3, 0);
+    /* the character shadows' (an enhancement): without them the 3D still draws, with the native shadows */
+    shadow_raster =
+        make_pipeline(shadow_mask_cs_dxil, shadow_mask_cs_dxil_size, shadow_mask_cs_spirv, shadow_mask_cs_spirv_size,
+                      shadow_mask_cs_msl, shadow_mask_cs_msl_size, SHADOW_MASK_CS_ENTRY, 0, 5, 0, 1);
+    shadow_blur =
+        make_pipeline(shadow_blur_cs_dxil, shadow_blur_cs_dxil_size, shadow_blur_cs_spirv, shadow_blur_cs_spirv_size,
+                      shadow_blur_cs_msl, shadow_blur_cs_msl_size, SHADOW_BLUR_CS_ENTRY, 0, 1, 0, 1);
+    shadows_off = shadow_raster == NULL || shadow_blur == NULL || !shadow_masks_for(1);
+    if (shadows_off) {
+        fprintf(stderr, "host: the enhanced character shadows cannot be drawn on this graphics card (%s)\n",
+                SDL_GetError());
+    }
     polys_capacity = KHDAYS_G3D_DS_POLYS;
     verts_capacity = KHDAYS_G3D_DS_VERTS;
     polys = make_buffer(polys_capacity * (Uint32)sizeof(KhdaysG3dPolygon));
     verts = make_buffer(verts_capacity * (Uint32)sizeof(KhdaysG3dVertex));
     vram = make_buffer(VRAM_BYTES);
     records = make_buffer((Uint32)RECORD_BYTES);
+    sequences = make_buffer((Uint32)sizeof(((KhdaysFramePackage *)0)->sequence3d_images));
     tiles_capacity = 1u << 18;
     tiles = make_buffer(tiles_capacity * 4u);
     vram_valid = 0;
@@ -173,18 +262,34 @@ int khdays_raster3d_open(SDL_GPUDevice *d)
         target_usage |= SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE;
     }
     if (raster == NULL || compose == NULL || polys == NULL || verts == NULL || vram == NULL || records == NULL ||
-        tiles == NULL || !khdays_gpu_hd_open(device)) {
+        tiles == NULL || sequences == NULL || (shadow_soft == NULL && !shadow_masks_for(1)) ||
+        !khdays_gpu_hd_open(device)) {
         char why[256];
         SDL_strlcpy(why, SDL_GetError(), sizeof(why));
         khdays_raster3d_close();
         SDL_SetError("%s", why);
         return 0;
     }
+    fxaa = make_pipeline(fxaa3d_cs_dxil, fxaa3d_cs_dxil_size, fxaa3d_cs_spirv, fxaa3d_cs_spirv_size, fxaa3d_cs_msl,
+                         fxaa3d_cs_msl_size, FXAA3D_CS_ENTRY, 0, 0, 2, 0);
+    if (fxaa == NULL) {
+        fprintf(stderr, "host: the antialiasing's pass cannot be made (%s): drawn without it\n", SDL_GetError());
+    }
+    native_ready = khdays_native3d_open(device);
+    if (!native_ready) {
+        fprintf(stderr, "host: the card's rasterizer cannot draw the 3D (%s): raster3d.hlsl draws it\n",
+                SDL_GetError());
+    }
+    /* KHDAYS_3D=compute: raster3d.hlsl draws all the 3D, as before the native renderer */
+    native = native_ready && (SDL_getenv("KHDAYS_3D") == NULL || SDL_strcmp(SDL_getenv("KHDAYS_3D"), "compute") != 0);
     return 1;
 }
 
 static void drop_targets(void)
 {
+    if (hud_color3d != NULL && hud_color3d == color3d) {
+        hud_color3d = hud_attr3d = NULL;
+    }
     if (wrapped != NULL) {
         SDL_DestroyTexture(wrapped);
         wrapped = NULL;
@@ -200,16 +305,74 @@ static void drop_targets(void)
     target_scale = target_columns = 0;
 }
 
+#define SWAP(type, a, b)                                                                                               \
+    do {                                                                                                               \
+        type swapped_ = (a);                                                                                           \
+        (a) = (b);                                                                                                     \
+        (b) = swapped_;                                                                                                \
+    } while (0)
+
+static void swap_spare(void)
+{
+    SWAP(SDL_GPUTexture *, color3d, spare_color3d);
+    SWAP(SDL_GPUTexture *, attr3d, spare_attr3d);
+    SWAP(SDL_GPUTexture *, screen, spare_screen);
+    SWAP(int, target_scale, spare_scale);
+    SWAP(int, target_columns, spare_columns);
+    SWAP(SDL_Texture *, wrapped, spare_wrapped);
+    SWAP(SDL_Renderer *, wrapped_for, spare_wrapped_for);
+}
+
+static void drop_spare(void)
+{
+    swap_spare();
+    drop_targets();
+    swap_spare();
+}
+
 void khdays_raster3d_close(void)
 {
     if (device == NULL) {
         return;
     }
     drop_targets();
+    if (shadow_raster)
+        SDL_ReleaseGPUComputePipeline(device, shadow_raster);
+    if (shadow_blur)
+        SDL_ReleaseGPUComputePipeline(device, shadow_blur);
+    if (shadow_raw)
+        SDL_ReleaseGPUBuffer(device, shadow_raw);
+    if (shadow_soft)
+        SDL_ReleaseGPUBuffer(device, shadow_soft);
+    if (shadow_tiles)
+        SDL_ReleaseGPUBuffer(device, shadow_tiles);
+    if (shadow_upload)
+        SDL_ReleaseGPUTransferBuffer(device, shadow_upload);
+    shadow_raster = shadow_blur = NULL;
+    shadow_raw = shadow_soft = shadow_tiles = NULL;
+    shadow_upload = NULL;
+    shadow_tile_capacity = 0;
+    shadow_masks = 0;
+    SDL_free(shadow_index);
+    shadow_index = NULL;
+    shadow_index_capacity = 0;
+    SDL_free(shadow_counts);
+    shadow_counts = NULL;
+    shadow_cells_capacity = 0;
+    drop_spare();
+    khdays_native3d_close();
+    native = native_ready = 0;
     if (raster != NULL)
         SDL_ReleaseGPUComputePipeline(device, raster);
     if (compose != NULL)
         SDL_ReleaseGPUComputePipeline(device, compose);
+    if (fxaa != NULL)
+        SDL_ReleaseGPUComputePipeline(device, fxaa);
+    if (fxaa_out != NULL)
+        SDL_ReleaseGPUTexture(device, fxaa_out);
+    fxaa = NULL;
+    fxaa_out = NULL;
+    fxaa_width = fxaa_height = 0;
     if (polys != NULL)
         SDL_ReleaseGPUBuffer(device, polys);
     if (verts != NULL)
@@ -221,10 +384,12 @@ void khdays_raster3d_close(void)
         SDL_ReleaseGPUBuffer(device, vram);
     if (records != NULL)
         SDL_ReleaseGPUBuffer(device, records);
+    if (sequences != NULL)
+        SDL_ReleaseGPUBuffer(device, sequences);
     if (upload != NULL)
         SDL_ReleaseGPUTransferBuffer(device, upload);
     raster = compose = NULL;
-    polys = verts = tiles = vram = records = NULL;
+    polys = verts = tiles = vram = records = sequences = NULL;
     upload = NULL;
     upload_size = 0;
     SDL_free(tile_list);
@@ -264,6 +429,14 @@ static int targets(int scale, int columns)
 {
     const int w = columns * scale, h = KHDAYS_FRAME_H * scale;
     if (scale != target_scale || columns != target_columns) {
+        if (hud_apart && spare_color3d != NULL && scale == spare_scale && columns == spare_columns) {
+            swap_spare(); /* the other size drawn this frame */
+            return 1;
+        }
+        if (hud_apart && color3d != NULL) {
+            drop_spare(); /* the size drawn last kept aside, the one before it let go */
+            swap_spare();
+        }
         drop_targets();
         color3d = make_target(SDL_GPU_TEXTUREFORMAT_R32_UINT, target_usage, w, h);
         attr3d = make_target(SDL_GPU_TEXTUREFORMAT_R32_UINT, target_usage, w, h);
@@ -314,6 +487,8 @@ SDL_Texture *khdays_raster3d_texture(SDL_Renderer *renderer)
  * share a group in hud_group -- the digits of a number, a gauge and its
  * frame. With `over_2d`, the polygons shown over the 2D count too. Returns
  * how many polygons. */
+static const KhdaysSequenceImage *hud_programs;
+
 static int hud_pieces(const KhdaysG3dList *list, int over_2d)
 {
     int *const hud = hud_index, *const group = hud_group;
@@ -334,6 +509,15 @@ static int hud_pieces(const KhdaysG3dList *list, int over_2d)
         }
         y0[n] = p->ymin;
         y1[n] = p->ymax;
+        if ((p->flags & KHDAYS_G3D_SEQUENCE) && hud_programs != NULL && p->pltt / 4u < KSI_3D_PROGRAMS) {
+            const unsigned *words = hud_programs[p->pltt / 4u].words;
+            if (words[KSI_OUTPUT] == p->pltt && words[KSI_ANCHORED]) {
+                memcpy(&x0[n], words + KSI_ANCHOR_X, 4);
+                memcpy(&y0[n], words + KSI_ANCHOR_Y, 4);
+                x1[n] = x0[n];
+                y1[n] = y0[n];
+            }
+        }
         hud[n] = i;
         group[n] = n;
         ++n;
@@ -408,6 +592,8 @@ static const KhdaysG3dVertex *move_hud(const KhdaysG3dList *list, int margin)
  * every w is 1) and is not the HUD's. */
 static int overlay_polygon(const KhdaysG3dPolygon *p, const KhdaysG3dVertex *v)
 {
+    if (p->flags & (KHDAYS_G3D_SHADOW_SOURCE | KHDAYS_G3D_SHADOW_RECEIVER))
+        return 0;
     if ((p->flags & KHDAYS_G3D_HUD) || p->count <= 0) {
         return 0;
     }
@@ -467,8 +653,8 @@ static const KhdaysG3dVertex *stretch_overlay(const KhdaysG3dList *list, const K
     return moved;
 }
 
-/* Builds the index of which polygons may cover each tile, in drawing order, for a target `tiles_x`
- * tiles wide whose first column is DS column `origin_x`: tiles_x * TILES_Y + 1 start offsets, then the
+/* Builds the index of which polygons from `first` on may cover each tile, in drawing order, for a target
+ * `tiles_x` tiles wide whose first column is DS column `origin_x`: tiles_x * TILES_Y + 1 start offsets, then the
  * polygon indices. A box is one DS pixel wider each side than its vertices (at N x a polygon covers
  * pixels within half a target pixel of its edges). Returns the number of entries. */
 /* What the last draws sent to the graphics card, for a report when it stops
@@ -498,7 +684,15 @@ static int unusable(const KhdaysG3dList *list, const KhdaysG3dPolygon *p)
     return 1;
 }
 
-static uint32_t build_tiles(const KhdaysG3dList *list, const KhdaysG3dVertex *vertices, int tiles_x, int origin_x)
+/* The polygons no renderer draws on the screen: the shadow masks' sources, and the native shadows the enhanced
+ * ones replace (or, when their masks cannot be made, the enhanced ones' receivers). */
+static int32_t hidden_flags(void)
+{
+    return KHDAYS_G3D_SHADOW_SOURCE | (shadows_ready ? KHDAYS_G3D_SHADOW_REPLACED : KHDAYS_G3D_SHADOW_RECEIVER);
+}
+
+static uint32_t build_tiles(const KhdaysG3dList *list, const KhdaysG3dVertex *vertices, int tiles_x, int origin_x,
+                            int first)
 {
     static uint32_t count[MAX_TILES], cursor[MAX_TILES];
     const int tile_count = tiles_x * TILES_Y;
@@ -509,9 +703,9 @@ static uint32_t build_tiles(const KhdaysG3dList *list, const KhdaysG3dVertex *ve
         const KhdaysG3dPolygon *p = &list->polys[i];
         float xmin = 1e9f, xmax = -1e9f;
         int tx0, tx1, ty0, ty1;
-        if (unusable(list, p)) {
+        if (i < first || (p->flags & hidden_flags()) || unusable(list, p)) {
             box[i][0] = 1;
-            box[i][1] = 0; /* empty */
+            box[i][1] = 0; /* empty: drawn before (the native 3D's) or unusable */
             continue;
         }
         for (int k = 0; k < p->count; ++k) {
@@ -577,10 +771,188 @@ static uint32_t build_tiles(const KhdaysG3dList *list, const KhdaysG3dVertex *ve
     return need;
 }
 
+/* The mask has its own overhead tile index; it never uses the camera's screen tiles. Before build_tiles, which
+ * reuses `box` and hides what depends on this. 0: no buffers for it this frame. */
+static int prepare_shadows(const KhdaysG3dList *list)
+{
+    uint32_t groups = 0, total = 0;
+    shadow_groups = 0;
+    for (int i = 0; i < list->npolys; ++i) {
+        const KhdaysG3dPolygon *p = &list->polys[i];
+        if ((p->flags & KHDAYS_G3D_SHADOW_SOURCE) && !unusable(list, p) && groups <= (uint32_t)p->shadow)
+            groups = (uint32_t)p->shadow + 1;
+    }
+    if (!groups)
+        return 1;
+    /* each mask's 16 x 16 tiles: how many polygons each tile has, then (cursor) where the next goes */
+    if (shadows_off) {
+        SDL_SetError("this graphics card cannot make their masks");
+        return 0;
+    }
+    if (groups > UINT32_MAX / 256u || !shadow_masks_for(groups))
+        return 0;
+    const uint32_t cells = groups * 256u;
+    if (cells > shadow_cells_capacity) {
+        uint32_t *grown = SDL_realloc(shadow_counts, (size_t)cells * sizeof(*grown));
+        if (!grown)
+            return 0;
+        shadow_counts = grown;
+        shadow_cells_capacity = cells;
+    }
+    uint32_t *counts = shadow_counts, *cursor = shadow_counts;
+    memset(counts, 0, (size_t)cells * sizeof(*counts));
+    for (int i = 0; i < list->npolys; ++i) {
+        const KhdaysG3dPolygon *p = &list->polys[i];
+        if (!(p->flags & KHDAYS_G3D_SHADOW_SOURCE) || unusable(list, p))
+            continue;
+        const uint32_t group = (uint32_t)p->shadow;
+        float x0 = 128, x1 = 0;
+        for (int k = 0; k < p->count; ++k) {
+            const float x = list->verts[p->first + k].x;
+            x0 = fminf(x0, x);
+            x1 = fmaxf(x1, x);
+        }
+        const int a = SDL_clamp((int)floorf(x0 / 8), 0, 15), b = SDL_clamp((int)floorf(x1 / 8), 0, 15);
+        const int c = SDL_clamp((int)floorf(p->ymin / 8), 0, 15), d = SDL_clamp((int)floorf(p->ymax / 8), 0, 15);
+        box[i][0] = (uint8_t)a;
+        box[i][1] = (uint8_t)b;
+        box[i][2] = (uint8_t)c;
+        box[i][3] = (uint8_t)d;
+        for (int y = c; y <= d; ++y)
+            for (int x = a; x <= b; ++x)
+                ++counts[group * 256u + (unsigned)y * 16u + (unsigned)x];
+    }
+    for (uint32_t i = 0; i < cells; ++i)
+        total += counts[i];
+    if (total > UINT32_MAX / 4u - cells - 1u)
+        return 0;
+    const uint32_t entries = cells + 1 + total, bytes = entries * 4u;
+    if (entries > shadow_index_capacity) {
+        uint32_t *grown = SDL_realloc(shadow_index, (size_t)bytes);
+        if (!grown)
+            return 0;
+        shadow_index = grown;
+        shadow_index_capacity = entries;
+    }
+    uint32_t at = cells + 1;
+    for (uint32_t i = 0; i < cells; ++i) {
+        const uint32_t here = counts[i];
+        shadow_index[i] = cursor[i] = at; /* (cursor and counts share their memory: each count read first) */
+        at += here;
+    }
+    shadow_index[cells] = at;
+    for (int i = 0; i < list->npolys; ++i) {
+        const KhdaysG3dPolygon *p = &list->polys[i];
+        if (!(p->flags & KHDAYS_G3D_SHADOW_SOURCE) || unusable(list, p))
+            continue;
+        const uint32_t group = (uint32_t)p->shadow;
+        for (int y = box[i][2]; y <= box[i][3]; ++y)
+            for (int x = box[i][0]; x <= box[i][1]; ++x)
+                shadow_index[cursor[group * 256u + (unsigned)y * 16u + (unsigned)x]++] = (uint32_t)i;
+    }
+    if (bytes > shadow_tile_capacity) {
+        if (shadow_tiles)
+            SDL_ReleaseGPUBuffer(device, shadow_tiles);
+        if (shadow_upload)
+            SDL_ReleaseGPUTransferBuffer(device, shadow_upload);
+        shadow_tile_capacity = 0;
+        shadow_tiles = make_buffer(bytes);
+        SDL_GPUTransferBufferCreateInfo ti = {0};
+        ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        ti.size = bytes;
+        shadow_upload = SDL_CreateGPUTransferBuffer(device, &ti);
+        if (!shadow_tiles || !shadow_upload)
+            return 0;
+        shadow_tile_capacity = bytes;
+    }
+    void *mapped = SDL_MapGPUTransferBuffer(device, shadow_upload, true);
+    if (!mapped)
+        return 0;
+    memcpy(mapped, shadow_index, bytes);
+    SDL_UnmapGPUTransferBuffer(device, shadow_upload);
+    shadow_groups = groups;
+    shadow_bytes = bytes;
+    shadow_entries = entries;
+    return 1;
+}
+
+static void draw_shadows(SDL_GPUCommandBuffer *cmd, const KhdaysG3dList *list)
+{
+    if (!shadows_ready || !shadow_groups)
+        return;
+    const uint32_t groups = shadow_groups;
+    SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTransferBufferLocation src = {shadow_upload, 0};
+    SDL_GPUBufferRegion dst = {shadow_tiles, 0, shadow_bytes};
+    SDL_UploadToGPUBuffer(copy, &src, &dst, true);
+    SDL_EndGPUCopyPass(copy);
+    const uint32_t params[4] = {groups, (uint32_t)list->npolys, (uint32_t)list->nverts, shadow_entries};
+    SDL_GPUStorageBufferReadWriteBinding out = {0};
+    out.buffer = shadow_raw;
+    out.cycle = true;
+    SDL_GPUBuffer *in[5] = {polys, verts, shadow_tiles, vram, khdays_gpu_hd_buffer()};
+    SDL_GPUComputePass *pass = SDL_BeginGPUComputePass(cmd, NULL, 0, &out, 1);
+    SDL_BindGPUComputePipeline(pass, shadow_raster);
+    SDL_BindGPUComputeStorageBuffers(pass, 0, in, 5);
+    SDL_PushGPUComputeUniformData(cmd, 0, params, sizeof(params));
+    SDL_DispatchGPUCompute(pass, 16, 16, groups);
+    SDL_EndGPUComputePass(pass);
+    out.buffer = shadow_soft;
+    pass = SDL_BeginGPUComputePass(cmd, NULL, 0, &out, 1);
+    SDL_BindGPUComputePipeline(pass, shadow_blur);
+    SDL_BindGPUComputeStorageBuffers(pass, 0, &shadow_raw, 1);
+    SDL_PushGPUComputeUniformData(cmd, 0, params, sizeof(params));
+    SDL_DispatchGPUCompute(pass, 16, 16, groups);
+    SDL_EndGPUComputePass(pass);
+}
+
 static uint32_t io32(const uint8_t *io3d, unsigned offset)
 {
     return (uint32_t)io3d[offset] | (uint32_t)io3d[offset + 1] << 8 | (uint32_t)io3d[offset + 2] << 16 |
            (uint32_t)io3d[offset + 3] << 24;
+}
+
+/* The antialiasing over the colour just drawn, `w` x `h`: FXAA into a texture of that size, copied back over
+ * the colour so whatever reads the 3D gets it smoothed. Returns 0 when the texture cannot be made. */
+static int smooth_edges(SDL_GPUCommandBuffer *cmd, int w, int h)
+{
+    FxaaParams fp;
+    SDL_GPUStorageTextureReadWriteBinding io[2];
+    SDL_GPUComputePass *pass;
+    SDL_GPUCopyPass *copy;
+    SDL_GPUTextureLocation from, to;
+    if (fxaa_out == NULL || fxaa_width != w || fxaa_height != h) {
+        if (fxaa_out != NULL) {
+            SDL_ReleaseGPUTexture(device, fxaa_out);
+        }
+        fxaa_out = make_target(SDL_GPU_TEXTUREFORMAT_R32_UINT, SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE, w, h);
+        fxaa_width = fxaa_out != NULL ? w : 0;
+        fxaa_height = fxaa_out != NULL ? h : 0;
+        if (fxaa_out == NULL) {
+            return 0;
+        }
+    }
+    SDL_zero(fp);
+    fp.width = (uint32_t)w;
+    fp.height = (uint32_t)h;
+    fp.fine = (uint32_t)fine;
+    SDL_zeroa(io);
+    io[0].texture = color3d; /* read only here */
+    io[1].texture = fxaa_out;
+    io[1].cycle = true;
+    pass = SDL_BeginGPUComputePass(cmd, io, 2, NULL, 0);
+    SDL_BindGPUComputePipeline(pass, fxaa);
+    SDL_PushGPUComputeUniformData(cmd, 0, &fp, sizeof(fp));
+    SDL_DispatchGPUCompute(pass, (Uint32)(w + 7) / 8, (Uint32)(h + 7) / 8, 1);
+    SDL_EndGPUComputePass(pass);
+    copy = SDL_BeginGPUCopyPass(cmd);
+    SDL_zero(from);
+    SDL_zero(to);
+    from.texture = fxaa_out;
+    to.texture = color3d;
+    SDL_CopyGPUTextureToTexture(copy, &from, &to, (Uint32)w, (Uint32)h, 1, false);
+    SDL_EndGPUCopyPass(copy);
+    return 1;
 }
 
 static const KhdaysG3dList *list_instead; /* a list to draw instead of the package's (khdays_raster3d_use_list) */
@@ -628,8 +1000,8 @@ static int place_all(const KhdaysG3dList *list, int origin_x)
         for (int i = 0; i < list->npolys; ++i) {
             KhdaysG3dPolygon *p = &placed_polys[i];
             float x0 = 1e9f, x1 = -1e9f, mx, my;
-            if (p->count <= 0 || p->first < 0 || p->first + p->count > list->nverts ||
-                (h->world && (p->flags & KHDAYS_G3D_HUD))) {
+            if ((p->flags & KHDAYS_G3D_SHADOW_SOURCE) || p->count <= 0 || p->first < 0 ||
+                p->first + p->count > list->nverts || (h->world && (p->flags & KHDAYS_G3D_HUD))) {
                 continue;
             }
             for (int k = 0; k < p->count; ++k) {
@@ -751,6 +1123,63 @@ void khdays_raster3d_use_list(const KhdaysG3dList *list)
     list_instead = list;
 }
 
+/* KHDAYS_PROFILE_GPU: the 3D's time on the card, said every 300 pictures in the log. */
+static int gpu_profile(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = SDL_getenv("KHDAYS_PROFILE_GPU") != NULL;
+    }
+    return on;
+}
+
+static void gpu_profile_add(double ms, int w, int h, int32_t npolys)
+{
+    static double total, most;
+    static int64_t polygons;
+    static int n;
+    total += ms;
+    most = ms > most ? ms : most;
+    polygons += npolys;
+    if (++n == 300) {
+        fprintf(stderr,
+                "raster3d: 300 pictures of %d x %d drawn on the card in %.2f ms on average, %.2f at most "
+                "(%lld polygons a picture)\n",
+                w, h, total / n, most, (long long)(polygons / n));
+        total = most = 0.0;
+        polygons = 0;
+        n = 0;
+    }
+}
+
+/* With the HUD apart: `list` with the other part's polygons hidden (as place_all hides them) -- the HUD's
+ * drawn alone, or everything but the HUD. */
+static KhdaysG3dPolygon *layer_polys;
+static int32_t layer_capacity;
+
+static int layer_of(const KhdaysG3dList *list, int hud, KhdaysG3dList *out)
+{
+    if (list->npolys > layer_capacity) {
+        KhdaysG3dPolygon *grown =
+            (KhdaysG3dPolygon *)SDL_realloc(layer_polys, (size_t)list->npolys * 2 * sizeof(KhdaysG3dPolygon));
+        if (grown == NULL) {
+            return 0;
+        }
+        layer_polys = grown;
+        layer_capacity = list->npolys * 2;
+    }
+    for (int32_t i = 0; i < list->npolys && i < layer_capacity; ++i) {
+        KhdaysG3dPolygon q = list->polys[i];
+        if (((q.flags & KHDAYS_G3D_HUD) != 0) != (hud != 0)) {
+            q.ymin = q.ymax = -100000.0f;
+        }
+        layer_polys[i] = q;
+    }
+    *out = *list;
+    out->polys = layer_polys;
+    return 1;
+}
+
 static int draw(const KhdaysFramePackage *p, int scale, int texture_smoothing, int compose_too)
 {
     const KhdaysG3dList *list = list_instead != NULL ? list_instead : &p->list3d;
@@ -761,6 +1190,7 @@ static int draw(const KhdaysFramePackage *p, int scale, int texture_smoothing, i
     const int tiles_x = (columns + TILE - 1) / TILE;
     const int w = columns * scale, h = KHDAYS_FRAME_H * scale;
     const int scratch_ok = scratch_for(list);
+    hud_programs = p->sequence3d_images;
     KhdaysG3dList placed;
     /* In widescreen the HUD's polygons go to the sides; on one screen where the composition's 3D shapes
      * place them, or else where the game draws them. */
@@ -778,12 +1208,21 @@ static int draw(const KhdaysFramePackage *p, int scale, int texture_smoothing, i
     const uint32_t record_bytes =
         compose_too ? (uint32_t)(record_columns * KHDAYS_FRAME_H) * (uint32_t)sizeof(KhdaysGpu2dComposition) : 0;
     const uint8_t *io3d = p->io3d;
-    uint32_t entries, tile_bytes, size, at;
-    int changed[VRAM_PAGES], nchanged = 0;
+    uint32_t entries = 0, tile_bytes, size, at, corner_bytes = 0;
+    int changed[VRAM_PAGES], nchanged = 0, drawn_natively = 0, rest;
+    KhdaysNative3dFrame frame;
     SDL_GPUCommandBuffer *cmd;
     uint8_t *mapped;
     if (device == NULL || !scratch_ok || !targets(scale, columns)) {
         return 0;
+    }
+    KhdaysG3dList layered;
+    if (hud_apart) {
+        if (!layer_of(list, drawing_hud, &layered)) {
+            SDL_SetError("out of memory for the HUD's polygons");
+            return 0;
+        }
+        list = &layered;
     }
     /* the polygon and vertex buffers grow with the lists: no limit but memory */
     if ((uint32_t)list->npolys > polys_capacity) {
@@ -804,10 +1243,57 @@ static int draw(const KhdaysFramePackage *p, int scale, int texture_smoothing, i
             return 0;
         }
     }
-    entries = build_tiles(list, vertices, tiles_x, origin_x);
-    if (entries == 0) {
-        SDL_SetError("out of memory for the tiles");
-        return 0;
+    shadows_ready = prepare_shadows(list);
+    if (!shadows_ready) {
+        static int said;
+        if (!said) {
+            said = 1;
+            fprintf(stderr,
+                    "host: the enhanced character shadows are left out (%s); if this persists, turn them off in "
+                    "Settings, Enhancements (said once)\n",
+                    SDL_GetError());
+        }
+    }
+    /* the card's rasterizer draws the polygons before the first it cannot (gpu_native3d.h), raster3d.hlsl the
+     * rest (all of them without the native 3D) */
+    SDL_zero(frame);
+    frame.scale = scale;
+    frame.width = w;
+    frame.height = h;
+    frame.origin_x = origin_x;
+    frame.disp3dcnt = p->disp3dcnt;
+    frame.swap_params = list->swap_params;
+    frame.alpha_ref = io3d[0x40];
+    frame.clear_color = io32(io3d, 0x50);
+    frame.clear_depth = io32(io3d, 0x54);
+    frame.smooth = (uint32_t)(texture_smoothing != 0) | (stretched ? 2u : 0u);
+    frame.fine = (uint32_t)fine;
+    for (int i = 0; i < 16; ++i) {
+        frame.toon[i] = io32(io3d, 0x80 + 4u * (unsigned)i);
+    }
+    if (drawing_hud) {
+        /* the HUD's polygons alone, over nothing: no clear colour's alpha or fog, no rear plane */
+        frame.clear_color &= ~(0x1fu << 16 | 0x8000u);
+        frame.disp3dcnt &= ~0x4000u;
+    }
+    if (native) {
+        drawn_natively = khdays_native3d_count(list, hidden_flags());
+        if (!khdays_native3d_prepare(list, drawn_natively, hidden_flags(), &frame, &corner_bytes)) {
+            fprintf(stderr, "host: the card's rasterizer cannot draw the 3D (%s): raster3d.hlsl draws it\n",
+                    SDL_GetError());
+            khdays_native3d_close();
+            native = native_ready = 0;
+            drawn_natively = 0;
+            corner_bytes = 0;
+        }
+    }
+    rest = !native || drawn_natively < list->npolys;
+    if (rest) {
+        entries = build_tiles(list, vertices, tiles_x, origin_x, drawn_natively);
+        if (entries == 0) {
+            SDL_SetError("out of memory for the tiles");
+            return 0;
+        }
     }
     tile_bytes = entries * 4u;
     if (entries > tiles_capacity) {
@@ -827,7 +1313,9 @@ static int draw(const KhdaysFramePackage *p, int scale, int texture_smoothing, i
         }
     }
     vram_valid = 1;
-    size = poly_bytes + vert_bytes + tile_bytes + record_bytes + (uint32_t)nchanged * KHDAYS_FRAME_VRAM_PAGE;
+    const uint32_t sequence_bytes = (uint32_t)sizeof(p->sequence3d_images);
+    size = poly_bytes + vert_bytes + tile_bytes + record_bytes + sequence_bytes + corner_bytes +
+           (uint32_t)nchanged * KHDAYS_FRAME_VRAM_PAGE;
     if (size > upload_size) {
         SDL_GPUTransferBufferCreateInfo info;
         if (upload != NULL) {
@@ -860,6 +1348,12 @@ static int draw(const KhdaysFramePackage *p, int scale, int texture_smoothing, i
                record_bytes);
     }
     at += record_bytes;
+    memcpy(mapped + at, p->sequence3d_images, sequence_bytes);
+    at += sequence_bytes;
+    if (corner_bytes != 0) {
+        memcpy(mapped + at, khdays_native3d_corners(), corner_bytes);
+    }
+    at += corner_bytes;
     for (int k = 0; k < nchanged; ++k) {
         const int n = changed[k];
         const uint8_t *page = n < TEX_PAGES ? p->tex + (size_t)n * KHDAYS_FRAME_VRAM_PAGE
@@ -873,7 +1367,7 @@ static int draw(const KhdaysFramePackage *p, int scale, int texture_smoothing, i
         vram_valid = 0;
         return 0;
     }
-    if (!khdays_gpu_hd_sync(cmd)) { /* upload the HD replacements the card does not have yet */
+    if (!khdays_gpu_hd_sync_drawn(cmd, list->polys, list->npolys)) { /* the HD replacements these polygons draw */
         SDL_CancelGPUCommandBuffer(cmd);
         vram_valid = 0;
         return 0;
@@ -897,7 +1391,10 @@ static int draw(const KhdaysFramePackage *p, int scale, int texture_smoothing, i
         UPLOAD(verts, vert_bytes, true)
         UPLOAD(tiles, tile_bytes, true)
         UPLOAD(records, record_bytes, true)
+        UPLOAD(sequences, sequence_bytes, true)
 #undef UPLOAD
+        khdays_native3d_upload(copy, upload, at, corner_bytes);
+        at += corner_bytes;
         for (int k = 0; k < nchanged; ++k) {
             /* the pages that changed, into the card's copy of the memory */
             src.offset = at + (uint32_t)k * KHDAYS_FRAME_VRAM_PAGE;
@@ -909,21 +1406,25 @@ static int draw(const KhdaysFramePackage *p, int scale, int texture_smoothing, i
         at += (uint32_t)nchanged * KHDAYS_FRAME_VRAM_PAGE;
         SDL_EndGPUCopyPass(copy);
     }
-    {
+    draw_shadows(cmd, list);
+    if (native) {
+        khdays_native3d_draw(cmd, &frame, polys, verts, vram, khdays_gpu_hd_buffer(), color3d, attr3d);
+    }
+    if (rest) {
         RasterParams rp;
         SDL_GPUStorageTextureReadWriteBinding out[2];
-        SDL_GPUBuffer *in[5] = {polys, verts, tiles, vram, khdays_gpu_hd_buffer()};
+        SDL_GPUBuffer *in[7] = {polys, verts, tiles, vram, khdays_gpu_hd_buffer(), sequences, shadow_soft};
         SDL_GPUComputePass *pass;
         SDL_zero(rp);
         rp.scale = (uint32_t)scale;
         rp.width = (uint32_t)w;
         rp.height = (uint32_t)h;
-        rp.disp3dcnt = p->disp3dcnt;
+        rp.disp3dcnt = frame.disp3dcnt;
         rp.swap_params = list->swap_params;
         rp.tiles_x = (uint32_t)tiles_x;
         rp.tiles_y = TILES_Y;
         rp.alpha_ref = io3d[0x40];
-        rp.clear_color = io32(io3d, 0x50);
+        rp.clear_color = frame.clear_color;
         rp.clear_depth = io32(io3d, 0x54);
         rp.smooth = (uint32_t)(texture_smoothing != 0) | (stretched ? 2u : 0u); /* the shader's pixel_art flags */
         rp.origin_x = origin_x;
@@ -931,6 +1432,7 @@ static int draw(const KhdaysFramePackage *p, int scale, int texture_smoothing, i
         rp.npolys = (uint32_t)list->npolys;
         rp.nverts = (uint32_t)list->nverts;
         rp.entries = entries;
+        rp.resume = (uint32_t)native;
         {
             Recent *r = &recent[recent_next++ % SDL_arraysize(recent)];
             r->frame = p->frame;
@@ -948,15 +1450,21 @@ static int draw(const KhdaysFramePackage *p, int scale, int texture_smoothing, i
         }
         SDL_zeroa(out);
         out[0].texture = color3d;
-        out[0].cycle = true;
+        out[0].cycle = !native; /* resumed: what the native 3D drew stays */
         out[1].texture = attr3d;
-        out[1].cycle = true;
+        out[1].cycle = !native;
         pass = SDL_BeginGPUComputePass(cmd, out, 2, NULL, 0);
         SDL_BindGPUComputePipeline(pass, raster);
-        SDL_BindGPUComputeStorageBuffers(pass, 0, in, 5);
+        SDL_BindGPUComputeStorageBuffers(pass, 0, in, 7);
         SDL_PushGPUComputeUniformData(cmd, 0, &rp, sizeof(rp));
         SDL_DispatchGPUCompute(pass, (Uint32)(w + 7) / 8, (Uint32)(h + 7) / 8, 1);
         SDL_EndGPUComputePass(pass);
+    }
+    /* the antialiasing: the 3D's edges smoothed before anything reads it (the HUD drawn apart left sharp) */
+    if (fxaa_on && fxaa != NULL && !drawing_hud && !smooth_edges(cmd, w, h)) {
+        fprintf(stderr, "host: no texture for the antialiasing at %dx%d (%s): drawn without it\n", w, h,
+                SDL_GetError());
+        fxaa_on = 0;
     }
     if (compose_too) {
         ComposeParams cp;
@@ -1000,11 +1508,40 @@ static int draw(const KhdaysFramePackage *p, int scale, int texture_smoothing, i
         SDL_DispatchGPUCompute(pass, (Uint32)(w + 7) / 8, (Uint32)(h + 7) / 8, 1);
         SDL_EndGPUComputePass(pass);
     }
+    if (gpu_profile()) {
+        /* KHDAYS_PROFILE_GPU: the 3D's time on the card, waited for (it slows the frame it measures) */
+        const Uint64 start = SDL_GetPerformanceCounter();
+        SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+        if (fence == NULL) {
+            vram_valid = 0;
+            return 0;
+        }
+        SDL_WaitForGPUFences(device, true, &fence, 1);
+        SDL_ReleaseGPUFence(device, fence);
+        gpu_profile_add((double)(SDL_GetPerformanceCounter() - start) * 1000.0 / (double)SDL_GetPerformanceFrequency(),
+                        w, h, p->list3d.npolys);
+        return 1;
+    }
     if (!SDL_SubmitGPUCommandBuffer(cmd)) {
         vram_valid = 0;
         return 0;
     }
     return 1;
+}
+
+int khdays_raster3d_native(void)
+{
+    return native;
+}
+
+void khdays_raster3d_set_native(int on)
+{
+    native = on && native_ready;
+}
+
+void khdays_raster3d_set_fxaa(int on)
+{
+    fxaa_on = on != 0;
 }
 
 void khdays_raster3d_set_fine(int on)
@@ -1042,6 +1579,46 @@ int khdays_raster3d_draw(const KhdaysFramePackage *p, int scale, int texture_smo
 int khdays_raster3d_rasterize(const KhdaysFramePackage *p, int scale, int texture_smoothing)
 {
     return draw(p, scale, texture_smoothing, 0);
+}
+
+void khdays_raster3d_set_hud_apart(int on)
+{
+    if (!on && hud_apart) {
+        drop_spare();
+        hud_color3d = hud_attr3d = NULL;
+    }
+    hud_apart = on != 0;
+    khdays_native3d_keep_two(hud_apart);
+}
+
+int khdays_raster3d_rasterize_hud(const KhdaysFramePackage *p, int scale, int texture_smoothing)
+{
+    int ok;
+    hud_color3d = hud_attr3d = NULL;
+    if (!hud_apart) {
+        SDL_SetError("the HUD is not drawn apart");
+        return 0;
+    }
+    drawing_hud = 1;
+    ok = draw(p, scale, texture_smoothing, 0);
+    drawing_hud = 0;
+    if (ok) {
+        hud_color3d = color3d;
+        hud_attr3d = attr3d;
+        hud_columns = target_columns;
+    }
+    return ok;
+}
+
+int khdays_raster3d_hud_targets(SDL_GPUTexture **color, SDL_GPUTexture **attr, int *columns)
+{
+    if (!hud_apart || hud_color3d == NULL || (hud_color3d != color3d && hud_color3d != spare_color3d)) {
+        return 0;
+    }
+    *color = hud_color3d;
+    *attr = hud_attr3d;
+    *columns = hud_columns;
+    return 1;
 }
 
 int khdays_raster3d_targets(SDL_GPUTexture **color, SDL_GPUTexture **attr, int *columns)

@@ -4,7 +4,7 @@
 #include "../theme.h"
 
 #include "core/files/paths.h"
-#include "core/rooms/kh2_source.h"
+#include "core/rooms/collection_source.h"
 
 #include "khdays/vfs/filesystem.h"
 
@@ -367,43 +367,91 @@ void draw_settings(App& app, bool* open) {
         }
         ImGui::EndCombo();
     }
+    // the game's folder, found as the tool started (main.cpp)
+    if (is_port_folder(app.settings.root))
+        ImGui::TextDisabled("%s", fmt(app.language, S::port_folder, {u8(app.settings.root)}).c_str());
+    else
+        ImGui::TextWrapped("%s", tr(app.language, S::port_folder_none));
     bool paths = false;
-    paths |= ImGui::InputText(tr(app.language, S::port_exe), &app.settings.port);
-    paths |= ImGui::InputText(tr(app.language, S::graphics_dump), &app.settings.graphics_dump);
-    paths |= ImGui::InputText(tr(app.language, S::sounds_dump), &app.settings.sounds_dump);
-    changed |= ImGui::InputText(tr(app.language, S::ffmpeg), &app.settings.ffmpeg);
-    // KH2's rooms: the 1.5+2.5 collection's folder, typed or chosen; empty, the install's
     {
         std::lock_guard lock(app.dialog_mutex);
-        if (!app.dialog_collections.empty()) {
-            app.settings.collection_1525 = app.dialog_collections.front();
-            app.dialog_collections.clear();
-            changed = true;
+        if (!app.dialog_ports.empty()) {
+            app.settings.port = app.dialog_ports.front();
+            app.dialog_ports.clear();
+            paths = true;
         }
     }
-    changed |= ImGui::InputText(tr(app.language, S::collection_1525), &app.settings.collection_1525);
+    paths |= ImGui::InputText(tr(app.language, S::port_exe), &app.settings.port);
     ImGui::SameLine();
-    if (ImGui::SmallButton(tr(app.language, S::choose_folder))) {
-        SDL_ShowOpenFolderDialog(
-            [](void* user, const char* const* folders, int) {
-                if (folders == nullptr || folders[0] == nullptr)
+    if (ImGui::SmallButton(tr(app.language, S::choose_file))) {
+#ifdef _WIN32
+        static const SDL_DialogFileFilter programs[] = {{"khdays-native", "exe"}};
+        const int filters = 1;
+#else
+        static const SDL_DialogFileFilter* programs = nullptr;  // programs have no extension of their own there
+        const int filters = 0;
+#endif
+        SDL_ShowOpenFileDialog(
+            [](void* user, const char* const* files, int) {
+                if (files == nullptr || files[0] == nullptr)
                     return;
                 App* a = static_cast<App*>(user);
                 std::lock_guard lock(a->dialog_mutex);
-                a->dialog_collections.emplace_back(folders[0]);
+                a->dialog_ports.emplace_back(files[0]);
             },
-            &app, app.window, nullptr, false);
+            &app, app.window, programs, filters, u8(app.settings.root).c_str(), false);
     }
     {
-        static std::string found_for = "\x01";
-        static std::string found;
-        if (found_for != app.settings.collection_1525) {
-            found = u8(kh2_collection(app.settings));
-            found_for = app.settings.collection_1525;
-        }
-        ImGui::TextDisabled("%s", found.empty() ? tr(app.language, S::collection_1525_none)
-                                                : fmt(app.language, S::collection_1525_found, {found}).c_str());
+        const fs::path exe = port_exe(app.settings);
+        std::error_code ec;
+        if (!app.settings.port.empty() && fs::is_regular_file(exe, ec))
+            ImGui::TextDisabled("%s", fmt(app.language, S::port_exe_found, {u8(exe)}).c_str());
+        else
+            ImGui::TextWrapped("%s", tr(app.language, S::port_exe_missing));
     }
+    paths |= ImGui::InputText(tr(app.language, S::graphics_dump), &app.settings.graphics_dump);
+    paths |= ImGui::InputText(tr(app.language, S::sounds_dump), &app.settings.sounds_dump);
+    changed |= ImGui::InputText(tr(app.language, S::ffmpeg), &app.settings.ffmpeg);
+    // the collections' rooms: each collection's folder, typed or chosen; empty, the install's
+    struct CollectionField {
+        App* app;
+        std::vector<std::string>* chosen;
+        std::string found_for = "\x01", found;
+    };
+    static CollectionField field_1525{&app, &app.dialog_collections}, field_28{&app, &app.dialog_collections_28};
+    auto collection_field = [&](CollectionField& f, std::string* folder, S label, const char* game, const char* id) {
+        {
+            std::lock_guard lock(app.dialog_mutex);
+            if (!f.chosen->empty()) {
+                *folder = f.chosen->front();
+                f.chosen->clear();
+                changed = true;
+            }
+        }
+        ImGui::PushID(id);
+        changed |= ImGui::InputText(tr(app.language, label), folder);
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr(app.language, S::choose_folder))) {
+            SDL_ShowOpenFolderDialog(
+                [](void* user, const char* const* folders, int) {
+                    if (folders == nullptr || folders[0] == nullptr)
+                        return;
+                    auto* chosen = static_cast<CollectionField*>(user);
+                    std::lock_guard lock(chosen->app->dialog_mutex);
+                    chosen->chosen->emplace_back(folders[0]);
+                },
+                &f, app.window, nullptr, false);
+        }
+        ImGui::PopID();
+        if (f.found_for != *folder) {
+            f.found = u8(collection_copy(app.settings, *collection_game(game)));
+            f.found_for = *folder;
+        }
+        ImGui::TextDisabled("%s", f.found.empty() ? tr(app.language, S::collection_1525_none)
+                                                  : fmt(app.language, S::collection_1525_found, {f.found}).c_str());
+    };
+    collection_field(field_1525, &app.settings.collection_1525, S::collection_1525, "kh2", "1525");
+    collection_field(field_28, &app.settings.collection_28, S::collection_28, "ddd", "28");
     if (ImGui::InputInt(tr(app.language, S::cache), &app.settings.cache_mb)) {
         if (app.settings.cache_mb < 1)
             app.settings.cache_mb = 1;

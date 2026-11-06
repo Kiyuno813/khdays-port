@@ -88,6 +88,22 @@ The mixers read the channels' current samples:
   32768. Seen: a walk's 148 seconds through the field peaked at the limiter's
   0.98 in 26 samples, none clipped.
 
+**The voices past the sixteen** (the PC's output only). On the DS a note that
+finds all its channels sounding takes the weakest of them (the driver's
+`snd7_channel_alloc`): a note still playing or dying away is cut. Measured
+2026-11-03 in the mission walk, 134 of 2000 notes took a channel still
+sounding. With the PC's mixer a wave's note (PCM, not PSG or noise) that finds
+none of its channels free takes one of the port's voices instead
+(`snd7_channel_alloc_wave`): a free one, or a new one, made with the hardware
+model's own (`khdays_sound_hw_add_voice`: channel 16 on, its registers past the
+DS's at `KHDAYS_SOUND_REG_SIZE + 16 v`), so no note cuts another. The voices are
+channels like the DS's -- envelope, LFO, sweep, the master pan and surround --
+heard only by the PC's mixer and a mod's waves; the game's ARM9 side never sees
+them (its channel masks, locks and status are the sixteen's). The DS's output
+keeps the DS's sixteen and its stealing. Seen: the run07 walk's field made 12
+voices (28 channels at the most) and played 167 of 864 starts on them.
+`KHDAYS_TRACE_SOUND` says each voice made.
+
 ## The categories
 
 The volume settings tell music, effects and voices apart by the sound
@@ -163,14 +179,24 @@ a 2 s tone over a 0.08 s menu click now plays its 2 s. The voices' streams
 (those of a voices' stream player, PLAYER_STRM_V01's lines) are decoded ahead
 with the sequence archives' entries.
 
+A mod's character gives its base's sounds files of its own (or silence) for its
+own actor only (CHARACTERS.md, `[sounds]`): the game names the actor whose
+sound it starts (its seat, from `Ov022_PlayEntityVoice` and
+`Ov022_SpawnVoiceCue`), and a sequence archive's entry it starts then plays the
+character's file instead of the original or a sound mod's; `none` plays nothing
+as long as the original lasts. Its files are decoded ahead with the others.
+
 ## The originals, to make replacements from
 
-`khdays-native --dump-sounds [DIR]` writes every sound of the archive as WAV
+`khdays-native --dump-sounds [DIR [NAME...]]` writes every sound of the archive as WAV
 under the identifier a replacement takes, headless: `wave/<archive>/<index>.wav`
 (each wave an instrument plays, as the DS's channel decodes it),
 `strm/<name>.wav` (each stream, as NitroSystem's stream player makes it),
 `seq/<name>.wav` and `seqarc/<archive>/<entry>.wav` (each sequence and entry,
-played by the native driver and the PC's mixer at 48,000 Hz). Loops go in
+played by the native driver and the PC's mixer at 48,000 Hz); with names after the folder, those sounds alone
+(`seqarc/COMMON_SYS/se_sys_click`: the Menu Overhaul's menu cues, tools/mods/overhaul/menu_sounds.py). A
+sequence's note of length 0 plays its wave through (its track waits for it): the render takes that wait for no
+loop, up to 30 s. Loops go in
 `smpl`. The dump is the game's data: only under `saves/`, never in a
 repository.
 
